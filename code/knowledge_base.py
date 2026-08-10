@@ -27,7 +27,7 @@ class KnowledgeBase:
     def __init__(
         self,
         persist_directory: str = "./data/chroma_db",
-        model_name: str = "qwen3:4b",
+        embedding_model_name: str = "qwen3-embedding:0.6b",
         base_url: str = "http://localhost:11434",
     ):
         """
@@ -35,11 +35,11 @@ class KnowledgeBase:
 
         Args:
             persist_directory: Chroma 数据库持久化目录
-            model_name: Ollama 嵌入模型名称
+            embedding_model_name: Ollama 嵌入模型名称（需使用专用的 embedding 模型，如 qwen3-embedding:0.6b）
             base_url: Ollama 服务地址
         """
         self.persist_directory = persist_directory
-        self.model_name = model_name
+        self.embedding_model_name = embedding_model_name
         self.base_url = base_url
 
         # 确保存储目录存在
@@ -47,7 +47,7 @@ class KnowledgeBase:
 
         # 初始化嵌入模型
         self.embeddings = OllamaEmbeddings(
-            model=self.model_name,
+            model=self.embedding_model_name,
             base_url=self.base_url,
         )
 
@@ -57,7 +57,10 @@ class KnowledgeBase:
             embedding_function=self.embeddings,
         )
 
-        # 初始化文本分割器
+        # 初始化文本分割器-递归切分
+        # 按段落→句子→字符的优先级递归切分，尽量在自然边界处切断，生产环境最常用的方案。
+        # overlap的作用：相邻chunk之间重叠一部分文字，避免关键信息正好在切割点上被截断。
+        # overlap 通常设 chunk\_size 的 10%-20%。
         self.text_splitter = RecursiveCharacterTextSplitter(
             chunk_size=500,
             chunk_overlap=50,

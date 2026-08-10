@@ -24,6 +24,17 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# ==================== 模型配置（LLM 与 Embedding 分开） ====================
+# Ollama 服务地址
+OLLAMA_BASE_URL = "http://localhost:11434"
+
+# 生成式模型（用于聊天/问答，RAGChain 的 ChatOllama）
+LLM_MODEL_NAME = "qwen3:4b"
+
+# 嵌入模型（用于文本向量化，KnowledgeBase 的 OllamaEmbeddings）
+# 注意：必须使用专用的 embedding 模型，不能用生成式模型
+EMBEDDING_MODEL_NAME = "bge-m3"
+
 # 全局对象
 knowledge_base: KnowledgeBase = None
 rag_chain: RAGChain = None
@@ -41,21 +52,21 @@ async def lifespan(app: FastAPI):
     os.makedirs("./data/uploads", exist_ok=True)
     os.makedirs("./data/chroma_db", exist_ok=True)
 
-    # 初始化知识库
+    # 初始化知识库（使用专用 Embedding 模型）
     knowledge_base = KnowledgeBase(
         persist_directory="./data/chroma_db",
-        model_name="qwen3:4b",
-        base_url="http://localhost:11434",
+        embedding_model_name=EMBEDDING_MODEL_NAME,
+        base_url=OLLAMA_BASE_URL,
     )
-    logger.info("知识库初始化完成")
+    logger.info("知识库初始化完成，嵌入模型: %s", EMBEDDING_MODEL_NAME)
 
-    # 初始化 RAG 问答链
+    # 初始化 RAG 问答链（使用生成式 LLM 模型）
     rag_chain = RAGChain(
         knowledge_base=knowledge_base,
-        model_name="qwen3:4b",
-        base_url="http://localhost:11434",
+        model_name=LLM_MODEL_NAME,
+        base_url=OLLAMA_BASE_URL,
     )
-    logger.info("RAG 问答链初始化完成")
+    logger.info("RAG 问答链初始化完成，LLM 模型: %s", LLM_MODEL_NAME)
 
     yield
 
