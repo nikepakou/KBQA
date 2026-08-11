@@ -11,14 +11,38 @@ from typing import Optional
 from langchain_community.document_loaders import (
     PyPDFLoader,
     TextLoader,
-    Docx2TxtLoader,
 )
-from langchain.text_splitter import RecursiveCharacterTextSplitter
+from docx import Document as DocxDocument
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_text_splitters import Language
 from langchain_community.vectorstores import Chroma
 from langchain_ollama import OllamaEmbeddings
 from langchain_core.documents import Document
 
 logger = logging.getLogger(__name__)
+
+# 代码文件扩展名到 LangChain Language 枚举的映射
+CODE_LANGUAGE_MAP = {
+    ".py": Language.PYTHON,
+    ".js": Language.JS,
+    ".ts": Language.TS,
+    ".java": Language.JAVA,
+    ".go": Language.GO,
+    ".rs": Language.RUST,
+    ".c": Language.C,
+    ".cpp": Language.CPP,
+    ".h": Language.CPP,
+    ".hpp": Language.CPP,
+    ".cs": Language.CSHARP,
+    ".php": Language.PHP,
+    ".rb": Language.RUBY,
+    ".swift": Language.SWIFT,
+    ".kt": Language.KOTLIN,
+    ".scala": Language.SCALA,
+    ".lua": Language.LUA,
+    ".pl": Language.PERL,
+    ".ps1": Language.POWERSHELL,
+}
 
 
 class KnowledgeBase:
@@ -67,6 +91,12 @@ class KnowledgeBase:
             length_function=len,
             separators=["\n\n", "\n", "。", "！", "？", "；", " ", ""],
         )
+        # 按token切分，留出余量，最大输入900token，低于模型1024上限
+        # self.text_splitter = TokenTextSplitter(
+        #     chunk_size=900,
+        #     chunk_overlap=100,
+        #     model_name="BAAI/bge-small-zh"
+        # )
 
         logger.info("知识库初始化完成，存储目录: %s", self.persist_directory)
 
@@ -91,21 +121,55 @@ class KnowledgeBase:
 
         if file_extension == ".pdf":
             loader = PyPDFLoader(file_path)
-        elif file_extension == ".txt":
-            loader = TextLoader(file_path, encoding="utf-8")
-        elif file_extension == ".md":
-            # Markdown 按文本文件解析
+        elif file_extension in (".txt", ".md"):
             loader = TextLoader(file_path, encoding="utf-8")
         elif file_extension == ".docx":
-            loader = Docx2TxtLoader(file_path)
+            # 使用 python-docx 直接解析
+            docx_doc = DocxDocument(file_path)
+            text = "\n".join(para.text for para in docx_doc.paragraphs)
+            documents = [Document(page_content=text, metadata={"source": file_path})]
+            logger.info("文档解析完成: %s, 共 1 段", file_path)
+            return documents
+        elif file_extension in CODE_LANGUAGE_MAP:
+            # 代码文件按文本解析，切分时使用语言感知分割器
+            loader = TextLoader(file_path, encoding="utf-8")
         else:
             raise ValueError(
-                f"不支持的文件类型: {file_extension}。支持: .pdf, .txt, .md, .docx"
+                f"不支持的文件类型: {file_extension}。支持: .pdf, .txt, .md, .docx, "
+                f".py, .js, .ts, .java, .go, .rs, .c, .cpp, .h, .cs, .php, .rb, "
+                f".swift, .kt, .scala, .lua, .pl, .ps1"
             )
 
         documents = loader.load()
         logger.info("文档解析完成: %s, 共 %d 页/段", file_path, len(documents))
         return documents
+
+    def _get_splitter(self, file_path: str):
+        """
+        根据文件类型获取合适的文本分割器
+
+        代码文件使用语言感知分割器，按函数/类等语法结构切分，保留完整代码块；
+        其他文件使用默认的递归字符分割器。
+
+        Args:
+            file_path: 文档文件路径
+
+        Returns:
+            文本分割器实例
+        """
+        file_extension = os.path.splitext(file_path)[1].lower()
+
+        if file_extension in CODE_LANGUAGE_MAP:
+            language = CODE_LANGUAGE_MAP[file_extension]
+            splitter = RecursiveCharacterTextSplitter.from_language(
+                language=language,
+                chunk_size=500,
+                chunk_overlap=50,
+            )
+            logger.info("使用代码分割器: %s -> %s", file_extension, language)
+            return splitter
+
+        return self.text_splitter
 
     def add_document(self, file_path: str, file_name: Optional[str] = None) -> str:
         """
@@ -133,8 +197,9 @@ class KnowledgeBase:
             doc.metadata["file_name"] = file_name
             doc.metadata["file_path"] = file_path
 
-        # 文本分割
-        split_docs = self.text_splitter.split_documents(documents)
+        # 文本分割（代码文件使用语言感知分割器）
+        splitter = self._get_splitter(file_path)
+        split_docs = splitter.split_documents(documents)
 
         # 为分割后的片段添加元数据
         for i, doc in enumerate(split_docs):

@@ -4,13 +4,13 @@
 
 ## 技术栈
 
-| 组件 | 说明 |
-|------|------|
-| Python 3.8+ | 开发语言 |
-| LangChain | LLM 应用开发框架 |
-| FastAPI | Web 服务框架 |
-| Chroma | 向量数据库 |
-| Ollama | 本地大模型运行环境（qwen3:4b 模型） |
+| 组件        | 说明                                |
+| ----------- | ----------------------------------- |
+| Python 3.8+ | 开发语言                            |
+| LangChain   | LLM 应用开发框架                    |
+| FastAPI     | Web 服务框架                        |
+| Chroma      | 向量数据库                          |
+| Ollama      | 本地大模型运行环境（qwen3:4b 模型） |
 
 ## 环境配置要求
 
@@ -43,7 +43,7 @@ python app.py
 方式二：使用 Uvicorn 启动
 
 ```bash
-uvicorn app:app --host 0.0.0.0 --port 8000 --reload
+uvicorn app:app --host 0.0.0.0 --port 8001 --reload
 ```
 
 启动成功后，打开浏览器访问 [http://localhost:8000](http://localhost:8000) 即可使用。
@@ -57,12 +57,12 @@ uvicorn app:app --host 0.0.0.0 --port 8000 --reload
 
 ## API 接口说明
 
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| `POST` | `/api/upload` | 上传文档到知识库 |
-| `POST` | `/api/ask` | 提交问题获取答案 |
-| `GET` | `/api/documents` | 获取知识库文档列表 |
-| `DELETE` | `/api/documents/{doc_id}` | 删除指定文档 |
+| 方法     | 路径                      | 说明               |
+| -------- | ------------------------- | ------------------ |
+| `POST`   | `/api/upload`             | 上传文档到知识库   |
+| `POST`   | `/api/ask`                | 提交问题获取答案   |
+| `GET`    | `/api/documents`          | 获取知识库文档列表 |
+| `DELETE` | `/api/documents/{doc_id}` | 删除指定文档       |
 
 ### 接口详情
 

@@ -268,3 +268,225 @@ section h2 {
         padding: 16px;
     }
 }
+
+/* Tab 切换样式 */
+.tabs {
+    display: flex;
+    gap: 0;
+    border-bottom: 2px solid #e0e0e0;
+    margin-bottom: 20px;
+}
+
+.tab-btn {
+    padding: 10px 24px;
+    background: #f5f5f5;
+    border: none;
+    cursor: pointer;
+    font-size: 15px;
+    color: #666;
+    border-bottom: 2px solid transparent;
+    margin-bottom: -2px;
+    transition: all 0.2s;
+}
+
+.tab-btn:hover {
+    color: #1890ff;
+    background: #e6f7ff;
+}
+
+.tab-btn.active {
+    color: #1890ff;
+    border-bottom-color: #1890ff;
+    background: #fff;
+}
+
+.tab-content {
+    display: none;
+}
+
+.tab-content.active {
+    display: block;
+}
+
+/* 表结构面板 */
+.schema-panel {
+    border: 1px solid #e8e8e8;
+    border-radius: 8px;
+    margin-bottom: 20px;
+    overflow: hidden;
+}
+
+.schema-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 12px 16px;
+    background: #fafafa;
+    cursor: pointer;
+    font-weight: 500;
+}
+
+.schema-header:hover {
+    background: #f0f0f0;
+}
+
+.schema-body {
+    padding: 16px;
+    max-height: 300px;
+    overflow-y: auto;
+}
+
+.schema-body.collapsed {
+    display: none;
+}
+
+.table-item {
+    margin-bottom: 16px;
+}
+
+.table-name {
+    font-weight: 600;
+    color: #1890ff;
+    margin-bottom: 8px;
+    font-size: 15px;
+}
+
+.column-item {
+    display: flex;
+    gap: 12px;
+    padding: 4px 0;
+    font-size: 13px;
+    color: #555;
+}
+
+.col-name {
+    min-width: 120px;
+    font-family: monospace;
+}
+
+.col-type {
+    min-width: 100px;
+    color: #888;
+}
+
+.col-comment {
+    color: #999;
+}
+
+/* 分析输入区 */
+.analyze-input-area {
+    display: flex;
+    gap: 10px;
+    margin-bottom: 20px;
+}
+
+.analyze-input-area input {
+    flex: 1;
+    padding: 10px 16px;
+    border: 1px solid #d9d9d9;
+    border-radius: 6px;
+    font-size: 14px;
+}
+
+.analyze-input-area input:focus {
+    outline: none;
+    border-color: #1890ff;
+    box-shadow: 0 0 0 2px rgba(24, 144, 255, 0.2);
+}
+
+.analyze-input-area button {
+    padding: 10px 24px;
+    background: #1890ff;
+    color: white;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 14px;
+}
+
+.analyze-input-area button:hover {
+    background: #40a9ff;
+}
+
+.analyze-input-area button:disabled {
+    background: #d9d9d9;
+    cursor: not-allowed;
+}
+
+/* 结果展示区 */
+.analyze-result {
+    border: 1px solid #e8e8e8;
+    border-radius: 8px;
+    overflow: hidden;
+}
+
+.result-section {
+    border-bottom: 1px solid #f0f0f0;
+}
+
+.result-section:last-child {
+    border-bottom: none;
+}
+
+.section-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 12px 16px;
+    background: #fafafa;
+    cursor: pointer;
+    font-weight: 500;
+}
+
+.sql-content {
+    padding: 16px;
+    margin: 0;
+    background: #f8f8f8;
+    font-family: monospace;
+    font-size: 13px;
+    white-space: pre-wrap;
+    word-break: break-all;
+}
+
+.chart-container {
+    width: 100%;
+    height: 400px;
+    padding: 16px;
+}
+
+.table-container {
+    overflow-x: auto;
+    padding: 16px;
+}
+
+#result-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+}
+
+#result-table th,
+#result-table td {
+    padding: 8px 12px;
+    border: 1px solid #e8e8e8;
+    text-align: left;
+}
+
+#result-table th {
+    background: #fafafa;
+    font-weight: 600;
+}
+
+#result-table tr:hover {
+    background: #f5f5f5;
+}
+
+.error {
+    color: #ff4d4f;
+    padding: 8px;
+}
+
+.loading {
+    color: #888;
+    padding: 8px;
+}

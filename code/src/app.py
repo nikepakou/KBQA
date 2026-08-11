@@ -16,6 +16,17 @@ from pydantic import BaseModel
 
 from knowledge_base import KnowledgeBase
 from rag_chain import RAGChain
+from config import MYSQL_HOST, MYSQL_PORT, MYSQL_USER, MYSQL_PASSWORD, MYSQL_DATABASE
+from db_manager import DBManager
+from data_analyzer import DataAnalyzer
+
+# 基于当前文件位置定位目录，避免工作目录不同导致路径错误
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+TEMPLATES_DIR = os.path.join(BASE_DIR, "templates")
+STATIC_DIR = os.path.join(BASE_DIR, "static")
+DATA_DIR = os.path.join(BASE_DIR, "data")
+UPLOADS_DIR = os.path.join(DATA_DIR, "uploads")
+CHROMA_DIR = os.path.join(DATA_DIR, "chroma_db")
 
 # 配置日志
 logging.basicConfig(
@@ -33,11 +44,17 @@ LLM_MODEL_NAME = "qwen3:4b"
 
 # 嵌入模型（用于文本向量化，KnowledgeBase 的 OllamaEmbeddings）
 # 注意：必须使用专用的 embedding 模型，不能用生成式模型
-EMBEDDING_MODEL_NAME = "bge-m3"
+# 6G 显卡推荐选项（按质量排序）：
+#   qwen3-embedding:0.6b  - 639MB, 1024维, 100+语言支持, MTEB 64.33（推荐）
+#   qllama/bge-small-zh-v1.5 - 26MB, 384维, 中文优化, 极轻量
+#   all-minilm            - 46MB, 384维, 多语言通用
+EMBEDDING_MODEL_NAME = "qwen3-embedding:0.6b"
 
 # 全局对象
 knowledge_base: KnowledgeBase = None
 rag_chain: RAGChain = None
+db_manager: DBManager = None
+data_analyzer: DataAnalyzer = None
 
 # 支持的文件扩展名
 SUPPORTED_EXTENSIONS = {".pdf", ".txt", ".md", ".docx"}
@@ -46,15 +63,15 @@ SUPPORTED_EXTENSIONS = {".pdf", ".txt", ".md", ".docx"}
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """应用生命周期管理：启动时初始化全局对象"""
-    global knowledge_base, rag_chain
+    global knowledge_base, rag_chain, db_manager, data_analyzer
 
     # 确保上传目录存在
-    os.makedirs("./data/uploads", exist_ok=True)
-    os.makedirs("./data/chroma_db", exist_ok=True)
+    os.makedirs(UPLOADS_DIR, exist_ok=True)
+    os.makedirs(CHROMA_DIR, exist_ok=True)
 
     # 初始化知识库（使用专用 Embedding 模型）
     knowledge_base = KnowledgeBase(
-        persist_directory="./data/chroma_db",
+        persist_directory=CHROMA_DIR,
         embedding_model_name=EMBEDDING_MODEL_NAME,
         base_url=OLLAMA_BASE_URL,
     )
@@ -68,9 +85,32 @@ async def lifespan(app: FastAPI):
     )
     logger.info("RAG 问答链初始化完成，LLM 模型: %s", LLM_MODEL_NAME)
 
+    # 初始化数据分析模块（MySQL 连接失败不阻断启动）
+    try:
+        db_manager = DBManager(
+            host=MYSQL_HOST,
+            port=MYSQL_PORT,
+            user=MYSQL_USER,
+            password=MYSQL_PASSWORD,
+            database=MYSQL_DATABASE,
+        )
+        if db_manager.connect():
+            data_analyzer = DataAnalyzer(
+                db_manager=db_manager,
+                llm_model=LLM_MODEL_NAME,
+                base_url=OLLAMA_BASE_URL,
+            )
+            logger.info("数据分析模块初始化完成")
+        else:
+            logger.warning("MySQL 连接失败，数据分析功能不可用")
+    except Exception as e:
+        logger.warning("数据分析模块初始化失败: %s，数据分析功能不可用", str(e))
+
     yield
 
-    # 清理资源（如有需要）
+    # 清理资源
+    if db_manager:
+        db_manager.close()
     logger.info("应用关闭")
 
 
@@ -83,12 +123,16 @@ app = FastAPI(
 )
 
 # 配置模板和静态文件目录
-templates = Jinja2Templates(directory="./templates")
-app.mount("/static", StaticFiles(directory="./static"), name="static")
+templates = Jinja2Templates(directory=TEMPLATES_DIR)
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
 # 请求模型
 class AskRequest(BaseModel):
+    question: str
+
+
+class AnalyzeRequest(BaseModel):
     question: str
 
 
@@ -98,7 +142,7 @@ class AskRequest(BaseModel):
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
     """返回主页 HTML"""
-    return templates.TemplateResponse("index.html", {"request": request})
+    return templates.TemplateResponse(request, "index.html")
 
 
 @app.post("/api/upload")
@@ -119,7 +163,7 @@ async def upload_document(file: UploadFile = File(...)):
         )
 
     # 保存文件到上传目录
-    file_path = os.path.join("./data/uploads", file.filename)
+    file_path = os.path.join(UPLOADS_DIR, file.filename)
     try:
         content = await file.read()
         with open(file_path, "wb") as f:
@@ -221,6 +265,54 @@ async def delete_document(doc_id: str):
         )
 
 
+@app.get("/api/db/tables")
+async def get_db_tables():
+    """获取数据库表结构"""
+    if not db_manager or not data_analyzer:
+        raise HTTPException(
+            status_code=503,
+            detail="数据分析功能未就绪，请检查 MySQL 连接配置",
+        )
+    try:
+        schema = db_manager.get_schema()
+        return {"tables": schema}
+    except Exception as e:
+        logger.error("获取表结构失败: %s", str(e))
+        raise HTTPException(
+            status_code=500,
+            detail=f"获取表结构失败: {str(e)}",
+        )
+
+
+@app.post("/api/analyze")
+async def analyze_data(request: AnalyzeRequest):
+    """
+    数据分析接口
+
+    - 接收自然语言问题
+    - 生成 SQL 查询
+    - 执行查询并推荐图表
+    """
+    if not request.question or not request.question.strip():
+        raise HTTPException(status_code=400, detail="问题不能为空")
+
+    if not data_analyzer:
+        raise HTTPException(
+            status_code=503,
+            detail="数据分析功能未就绪，请检查 MySQL 连接配置",
+        )
+
+    try:
+        result = data_analyzer.analyze(request.question.strip())
+        return result
+    except Exception as e:
+        logger.error("数据分析失败: %s", str(e))
+        raise HTTPException(
+            status_code=500,
+            detail=f"数据分析失败: {str(e)}",
+        )
+
+
 # ==================== 全局异常处理 ====================
 
 
@@ -247,14 +339,14 @@ async def general_exception_handler(request: Request, exc: Exception):
 
 if __name__ == "__main__":
     # 确保必要的目录存在
-    os.makedirs("./data/uploads", exist_ok=True)
-    os.makedirs("./data/chroma_db", exist_ok=True)
-    os.makedirs("./templates", exist_ok=True)
-    os.makedirs("./static", exist_ok=True)
+    os.makedirs(UPLOADS_DIR, exist_ok=True)
+    os.makedirs(CHROMA_DIR, exist_ok=True)
+    os.makedirs(TEMPLATES_DIR, exist_ok=True)
+    os.makedirs(STATIC_DIR, exist_ok=True)
 
     uvicorn.run(
         "app:app",
         host="0.0.0.0",
-        port=8000,
+        port=8001,
         reload=True,
     )

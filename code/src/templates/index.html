@@ -1,0 +1,489 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>知识库问答系统</title>
+    <link rel="stylesheet" href="/static/style.css" />
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
+  </head>
+  <body>
+    <div class="container">
+      <!-- Tab 切换 -->
+      <div class="tabs">
+        <button class="tab-btn active" onclick="switchTab('qa')">
+          知识库问答
+        </button>
+        <button class="tab-btn" onclick="switchTab('analysis')">
+          数据分析
+        </button>
+      </div>
+
+      <div id="qa-tab" class="tab-content active">
+        <header>
+          <h1>📚 知识库问答系统</h1>
+          <p>基于 RAG 技术的智能文档问答</p>
+        </header>
+
+        <main>
+          <!-- 文档上传区域 -->
+          <section class="upload-section">
+            <h2>📄 文档上传</h2>
+            <div class="upload-area" id="uploadArea">
+              <input
+                type="file"
+                id="fileInput"
+                accept=".pdf,.txt,.md,.docx"
+                hidden
+              />
+              <div class="upload-placeholder">
+                <span class="upload-icon">📁</span>
+                <p>点击或拖拽文件到此处上传</p>
+                <p class="upload-hint">支持 PDF、TXT、MD、DOCX 格式</p>
+              </div>
+            </div>
+            <div id="uploadStatus" class="status-message"></div>
+          </section>
+
+          <!-- 文档列表区域 -->
+          <section class="documents-section">
+            <h2>📋 文档列表</h2>
+            <div id="documentList" class="document-list">
+              <p class="empty-message">暂无文档，请先上传</p>
+            </div>
+          </section>
+
+          <!-- 问答区域 -->
+          <section class="qa-section">
+            <h2>💬 知识问答</h2>
+            <div class="qa-input-area">
+              <textarea
+                id="questionInput"
+                placeholder="请输入您的问题..."
+                rows="3"
+              ></textarea>
+              <button id="askBtn" onclick="askQuestion()">提问</button>
+            </div>
+            <div id="answerArea" class="answer-area" style="display: none">
+              <div class="answer-content">
+                <h3>回答：</h3>
+                <div id="answerText"></div>
+              </div>
+              <div
+                class="sources-content"
+                id="sourcesContent"
+                style="display: none"
+              >
+                <h3>参考来源：</h3>
+                <div id="sourcesList"></div>
+              </div>
+            </div>
+            <div id="qaStatus" class="status-message"></div>
+          </section>
+        </main>
+      </div>
+
+      <div id="analysis-tab" class="tab-content">
+        <!-- 表结构面板 -->
+        <div class="schema-panel">
+          <div class="schema-header" onclick="toggleSchema()">
+            <span>数据库表结构</span>
+            <span id="schema-toggle">▼</span>
+          </div>
+          <div id="schema-content" class="schema-body">
+            <div class="loading">加载中...</div>
+          </div>
+        </div>
+
+        <!-- 分析输入区 -->
+        <div class="analyze-input-area">
+          <input
+            type="text"
+            id="analyze-input"
+            placeholder="输入分析问题，例如：统计每个部门的员工数量"
+            onkeypress="if (event.key === 'Enter') doAnalyze();"
+          />
+          <button id="analyze-btn" onclick="doAnalyze()">分析</button>
+        </div>
+
+        <!-- 结果展示区 -->
+        <div id="analyze-result" class="analyze-result" style="display: none">
+          <!-- SQL 展示 -->
+          <div class="result-section">
+            <div class="section-header" onclick="toggleSql()">
+              <span>生成的 SQL</span>
+              <span id="sql-toggle">▶</span>
+            </div>
+            <pre
+              id="sql-content"
+              class="sql-content"
+              style="display: none"
+            ></pre>
+          </div>
+
+          <!-- 图表区 -->
+          <div class="result-section">
+            <div id="chart-container" class="chart-container"></div>
+          </div>
+
+          <!-- 数据表格 -->
+          <div class="result-section">
+            <div class="section-header">查询结果</div>
+            <div class="table-container">
+              <table id="result-table"></table>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      // 页面加载时获取文档列表
+      document.addEventListener("DOMContentLoaded", function () {
+        loadDocuments();
+        setupUpload();
+      });
+
+      // 文件上传设置
+      function setupUpload() {
+        const uploadArea = document.getElementById("uploadArea");
+        const fileInput = document.getElementById("fileInput");
+
+        uploadArea.addEventListener("click", () => fileInput.click());
+
+        uploadArea.addEventListener("dragover", (e) => {
+          e.preventDefault();
+          uploadArea.classList.add("dragover");
+        });
+
+        uploadArea.addEventListener("dragleave", () => {
+          uploadArea.classList.remove("dragover");
+        });
+
+        uploadArea.addEventListener("drop", (e) => {
+          e.preventDefault();
+          uploadArea.classList.remove("dragover");
+          if (e.dataTransfer.files.length > 0) {
+            uploadFile(e.dataTransfer.files[0]);
+          }
+        });
+
+        fileInput.addEventListener("change", (e) => {
+          if (e.target.files.length > 0) {
+            uploadFile(e.target.files[0]);
+          }
+        });
+      }
+
+      // 上传文件
+      async function uploadFile(file) {
+        const statusDiv = document.getElementById("uploadStatus");
+        const formData = new FormData();
+        formData.append("file", file);
+
+        statusDiv.className = "status-message info";
+        statusDiv.textContent = "正在上传...";
+
+        try {
+          const response = await fetch("/api/upload", {
+            method: "POST",
+            body: formData,
+          });
+
+          const data = await response.json();
+
+          if (response.ok) {
+            statusDiv.className = "status-message success";
+            statusDiv.textContent = `上传成功: ${data.file_name}`;
+            loadDocuments();
+          } else {
+            statusDiv.className = "status-message error";
+            statusDiv.textContent = `上传失败: ${data.detail || "未知错误"}`;
+          }
+        } catch (error) {
+          statusDiv.className = "status-message error";
+          statusDiv.textContent = `上传失败: ${error.message}`;
+        }
+
+        // 清空 file input，允许重复上传同一文件
+        document.getElementById("fileInput").value = "";
+      }
+
+      // 加载文档列表
+      async function loadDocuments() {
+        const listDiv = document.getElementById("documentList");
+
+        try {
+          const response = await fetch("/api/documents");
+          const data = await response.json();
+
+          if (data.documents.length === 0) {
+            listDiv.innerHTML =
+              '<p class="empty-message">暂无文档，请先上传</p>';
+            return;
+          }
+
+          let html = "";
+          data.documents.forEach((doc) => {
+            html += `
+                        <div class="document-item">
+                            <div class="document-info">
+                                <span class="document-name">📄 ${doc.file_name}</span>
+                                <span class="document-meta">${doc.chunk_count} 个文本块</span>
+                            </div>
+                            <button class="delete-btn" onclick="deleteDocument('${doc.doc_id}')">删除</button>
+                        </div>
+                    `;
+          });
+          listDiv.innerHTML = html;
+        } catch (error) {
+          listDiv.innerHTML = `<p class="empty-message">加载失败: ${error.message}</p>`;
+        }
+      }
+
+      // 删除文档
+      async function deleteDocument(docId) {
+        if (!confirm("确定要删除此文档吗？")) return;
+
+        try {
+          const response = await fetch(`/api/documents/${docId}`, {
+            method: "DELETE",
+          });
+
+          if (response.ok) {
+            loadDocuments();
+          } else {
+            const data = await response.json();
+            alert(`删除失败: ${data.detail || "未知错误"}`);
+          }
+        } catch (error) {
+          alert(`删除失败: ${error.message}`);
+        }
+      }
+
+      // 提问
+      async function askQuestion() {
+        const question = document.getElementById("questionInput").value.trim();
+        const statusDiv = document.getElementById("qaStatus");
+        const answerArea = document.getElementById("answerArea");
+
+        if (!question) {
+          statusDiv.className = "status-message error";
+          statusDiv.textContent = "请输入问题";
+          return;
+        }
+
+        statusDiv.className = "status-message info";
+        statusDiv.textContent = "正在思考...";
+        answerArea.style.display = "none";
+
+        try {
+          const response = await fetch("/api/ask", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ question }),
+          });
+
+          const data = await response.json();
+
+          if (response.ok) {
+            statusDiv.textContent = "";
+            answerArea.style.display = "block";
+            document.getElementById("answerText").textContent = data.answer;
+
+            const sourcesContent = document.getElementById("sourcesContent");
+            const sourcesList = document.getElementById("sourcesList");
+
+            if (data.sources && data.sources.length > 0) {
+              sourcesContent.style.display = "block";
+              let sourcesHtml = "";
+              data.sources.forEach((source, index) => {
+                sourcesHtml += `
+                                <div class="source-item">
+                                    <div class="source-header">来源 ${index + 1}: ${source.file_name}</div>
+                                    <div class="source-text">${source.content}</div>
+                                </div>
+                            `;
+              });
+              sourcesList.innerHTML = sourcesHtml;
+            } else {
+              sourcesContent.style.display = "none";
+            }
+          } else {
+            statusDiv.className = "status-message error";
+            statusDiv.textContent = `问答失败: ${data.detail || "未知错误"}`;
+          }
+        } catch (error) {
+          statusDiv.className = "status-message error";
+          statusDiv.textContent = `问答失败: ${error.message}`;
+        }
+      }
+
+      // 回车键提交问题
+      document
+        .getElementById("questionInput")
+        .addEventListener("keydown", function (e) {
+          if (e.key === "Enter" && !e.shiftKey) {
+            e.preventDefault();
+            askQuestion();
+          }
+        });
+    </script>
+
+    <script>
+      // Tab 切换
+      function switchTab(tabName) {
+        document
+          .querySelectorAll(".tab-content")
+          .forEach((el) => el.classList.remove("active"));
+        document
+          .querySelectorAll(".tab-btn")
+          .forEach((el) => el.classList.remove("active"));
+        document.getElementById(tabName + "-tab").classList.add("active");
+        event.target.classList.add("active");
+      }
+
+      // 表结构面板折叠
+      function toggleSchema() {
+        const content = document.getElementById("schema-content");
+        const toggle = document.getElementById("schema-toggle");
+        content.classList.toggle("collapsed");
+        toggle.textContent = content.classList.contains("collapsed")
+          ? "▶"
+          : "▼";
+      }
+
+      // SQL 展示折叠
+      function toggleSql() {
+        const content = document.getElementById("sql-content");
+        const toggle = document.getElementById("sql-toggle");
+        if (content.style.display === "none") {
+          content.style.display = "block";
+          toggle.textContent = "▼";
+        } else {
+          content.style.display = "none";
+          toggle.textContent = "▶";
+        }
+      }
+
+      // 加载表结构
+      async function loadSchema() {
+        try {
+          const resp = await fetch("/api/db/tables");
+          if (!resp.ok) {
+            const data = await resp.json();
+            document.getElementById("schema-content").innerHTML =
+              `<div class="error">${data.detail || "加载失败"}</div>`;
+            return;
+          }
+          const data = await resp.json();
+          let html = "";
+          for (const [table, columns] of Object.entries(data.tables)) {
+            html += `<div class="table-item">`;
+            html += `<div class="table-name">${table}</div>`;
+            html += `<div class="columns">`;
+            for (const col of columns) {
+              html += `<div class="column-item">`;
+              html += `<span class="col-name">${col.column}</span>`;
+              html += `<span class="col-type">${col.type}</span>`;
+              if (col.comment)
+                html += `<span class="col-comment">${col.comment}</span>`;
+              html += `</div>`;
+            }
+            html += `</div></div>`;
+          }
+          document.getElementById("schema-content").innerHTML =
+            html || '<div class="loading">无表结构</div>';
+        } catch (e) {
+          document.getElementById("schema-content").innerHTML =
+            `<div class="error">加载失败: ${e.message}</div>`;
+        }
+      }
+
+      // 执行分析
+      async function doAnalyze() {
+        const input = document.getElementById("analyze-input");
+        const question = input.value.trim();
+        if (!question) return;
+
+        const btn = document.getElementById("analyze-btn");
+        const resultDiv = document.getElementById("analyze-result");
+
+        btn.disabled = true;
+        btn.textContent = "分析中...";
+        resultDiv.style.display = "none";
+
+        try {
+          const resp = await fetch("/api/analyze", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ question: question }),
+          });
+          const data = await resp.json();
+
+          if (!resp.ok || data.error) {
+            alert(data.detail || data.error || "分析失败");
+            return;
+          }
+
+          // 显示 SQL
+          document.getElementById("sql-content").textContent = data.sql || "";
+          document.getElementById("sql-content").style.display = "none";
+          document.getElementById("sql-toggle").textContent = "▶";
+
+          // 渲染图表
+          const chartContainer = document.getElementById("chart-container");
+          if (
+            data.chart &&
+            data.chart.chart_type !== "none" &&
+            data.chart.option
+          ) {
+            chartContainer.style.display = "block";
+            const chart = echarts.init(chartContainer);
+            chart.setOption(data.chart.option);
+            window.addEventListener("resize", () => chart.resize());
+          } else {
+            chartContainer.style.display = "none";
+          }
+
+          // 渲染表格
+          renderTable(data.data);
+
+          resultDiv.style.display = "block";
+        } catch (e) {
+          alert("请求失败: " + e.message);
+        } finally {
+          btn.disabled = false;
+          btn.textContent = "分析";
+        }
+      }
+
+      // 渲染数据表格
+      function renderTable(data) {
+        if (!data || !data.columns || !data.rows) {
+          document.getElementById("result-table").innerHTML =
+            "<tr><td>无数据</td></tr>";
+          return;
+        }
+        let html = "<thead><tr>";
+        data.columns.forEach((col) => {
+          const colName = typeof col === "object" ? col.name : col;
+          html += `<th>${colName}</th>`;
+        });
+        html += "</tr></thead><tbody>";
+        data.rows.forEach((row) => {
+          html += "<tr>";
+          row.forEach((cell) => {
+            html += `<td>${cell !== null ? cell : ""}</td>`;
+          });
+          html += "</tr>";
+        });
+        html += "</tbody>";
+        document.getElementById("result-table").innerHTML = html;
+      }
+
+      // 页面加载时获取表结构
+      document.addEventListener("DOMContentLoaded", loadSchema);
+    </script>
+  </body>
+</html>

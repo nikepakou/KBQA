@@ -10,3 +10,6 @@ markdown
 python-multipart
 jinja2
 pydantic
+pymysql
+sqlparse
+python-dotenv
