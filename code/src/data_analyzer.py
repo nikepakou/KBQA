@@ -10,30 +10,31 @@ import logging
 from typing import Optional
 
 import sqlparse
-from langchain_ollama import ChatOllama
 from db_manager import DBManager
-from config import OLLAMA_BASE_URL, LLM_MODEL_NAME, MAX_QUERY_ROWS
+from config import MAX_QUERY_ROWS
+from llm_factory import LLMFactory
 
 
 class DataAnalyzer:
     """数据分析器，提供自然语言转 SQL、查询执行与图表推荐能力。"""
 
-    def __init__(self, db_manager: DBManager, llm_model: str = LLM_MODEL_NAME, base_url: str = OLLAMA_BASE_URL):
+    def __init__(self, db_manager: DBManager, llm_model: Optional[str] = None, base_url: Optional[str] = None, provider: Optional[str] = None):
         """初始化数据分析器。
 
         Args:
             db_manager: 数据库管理器实例，提供 schema 获取与查询执行能力
-            llm_model: Ollama 模型名称，默认使用配置中的 LLM_MODEL_NAME
-            base_url: Ollama 服务地址，默认使用配置中的 OLLAMA_BASE_URL
+            llm_model: 模型名称，为 None 时使用配置中的默认值
+            base_url: 模型服务地址（保留用于向后兼容，实际使用 LLMFactory 中的配置）
+            provider: 模型提供商，为 None 时使用配置中的默认值
         """
         self.db_manager = db_manager
-        self.llm = ChatOllama(
-            model=llm_model,
-            base_url=base_url,
+        self.llm = LLMFactory.create_llm(
+            model_name=llm_model,
             temperature=0.1,
+            provider=provider,
         )
         self._schema_text = None
-        logger.info("DataAnalyzer 初始化完成，模型: %s，地址: %s", llm_model, base_url)
+        logger.info("DataAnalyzer 初始化完成，提供商: %s", provider or LLMFactory.get_current_provider())
 
     def _get_schema_text(self) -> str:
         """获取格式化的数据库表结构文本，带缓存。

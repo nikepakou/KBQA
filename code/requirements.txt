@@ -3,6 +3,7 @@ uvicorn
 langchain
 langchain-community
 langchain-ollama
+langchain-openai
 chromadb
 pypdf
 python-docx

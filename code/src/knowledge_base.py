@@ -16,8 +16,9 @@ from docx import Document as DocxDocument
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_text_splitters import Language
 from langchain_community.vectorstores import Chroma
-from langchain_ollama import OllamaEmbeddings
 from langchain_core.documents import Document
+
+from llm_factory import LLMFactory
 
 logger = logging.getLogger(__name__)
 
@@ -51,28 +52,31 @@ class KnowledgeBase:
     def __init__(
         self,
         persist_directory: str = "./data/chroma_db",
-        embedding_model_name: str = "qwen3-embedding:0.6b",
-        base_url: str = "http://localhost:11434",
+        embedding_model_name: Optional[str] = None,
+        base_url: Optional[str] = None,
+        provider: Optional[str] = None,
     ):
         """
         初始化知识库
 
         Args:
             persist_directory: Chroma 数据库持久化目录
-            embedding_model_name: Ollama 嵌入模型名称（需使用专用的 embedding 模型，如 qwen3-embedding:0.6b）
-            base_url: Ollama 服务地址
+            embedding_model_name: 嵌入模型名称，为 None 时使用配置中的默认值
+            base_url: 模型服务地址（保留用于向后兼容，实际使用 LLMFactory 中的配置）
+            provider: 模型提供商，为 None 时使用配置中的默认值
         """
         self.persist_directory = persist_directory
         self.embedding_model_name = embedding_model_name
         self.base_url = base_url
+        self.provider = provider
 
         # 确保存储目录存在
         os.makedirs(self.persist_directory, exist_ok=True)
 
-        # 初始化嵌入模型
-        self.embeddings = OllamaEmbeddings(
-            model=self.embedding_model_name,
-            base_url=self.base_url,
+        # 初始化嵌入模型（使用 LLMFactory 支持多提供商）
+        self.embeddings = LLMFactory.create_embedding(
+            model_name=embedding_model_name,
+            provider=provider,
         )
 
         # 初始化向量数据库

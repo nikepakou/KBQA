@@ -4,13 +4,14 @@ RAG 问答链模块
 """
 
 import logging
-from typing import Any
+from typing import Any, Optional
 
-from langchain_ollama import ChatOllama
 from langchain_core.prompts import PromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.runnables import RunnablePassthrough
 from langchain_core.documents import Document
+
+from llm_factory import LLMFactory
 
 logger = logging.getLogger(__name__)
 
@@ -35,30 +36,33 @@ class RAGChain:
     def __init__(
         self,
         knowledge_base: Any,
-        model_name: str = "qwen3:4b",
-        base_url: str = "http://localhost:11434",
+        model_name: Optional[str] = None,
+        base_url: Optional[str] = None,
         temperature: float = 0.1,
         prompt_template: str = DEFAULT_PROMPT_TEMPLATE,
+        provider: Optional[str] = None,
     ):
         """
         初始化 RAG 问答链
 
         Args:
             knowledge_base: KnowledgeBase 实例，提供 get_retriever() 方法
-            model_name: Ollama 模型名称，默认为 qwen3:4b
-            base_url: Ollama 服务地址，默认为 http://localhost:11434
+            model_name: 模型名称，为 None 时使用配置中的默认值
+            base_url: 模型服务地址（保留用于向后兼容，实际使用 LLMFactory 中的配置）
             temperature: 模型温度参数，控制生成随机性
             prompt_template: 自定义提示词模板，需包含 {context} 和 {question} 占位符
+            provider: 模型提供商，为 None 时使用配置中的默认值
         """
         self.knowledge_base = knowledge_base
         self.model_name = model_name
         self.base_url = base_url
+        self.provider = provider
 
-        # 初始化 LLM
-        self.llm = ChatOllama(
-            model=self.model_name,
-            base_url=self.base_url,
+        # 初始化 LLM（使用 LLMFactory 支持多提供商）
+        self.llm = LLMFactory.create_llm(
+            model_name=model_name,
             temperature=temperature,
+            provider=provider,
         )
 
         # 初始化提示词模板

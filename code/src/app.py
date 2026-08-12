@@ -16,9 +16,10 @@ from pydantic import BaseModel
 
 from knowledge_base import KnowledgeBase
 from rag_chain import RAGChain
-from config import MYSQL_HOST, MYSQL_PORT, MYSQL_USER, MYSQL_PASSWORD, MYSQL_DATABASE
+from config import MYSQL_HOST, MYSQL_PORT, MYSQL_USER, MYSQL_PASSWORD, MYSQL_DATABASE, LLM_PROVIDER, EMBEDDING_PROVIDER
 from db_manager import DBManager
 from data_analyzer import DataAnalyzer
+from llm_factory import LLMFactory
 
 # 基于当前文件位置定位目录，避免工作目录不同导致路径错误
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -35,20 +36,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ==================== 模型配置（LLM 与 Embedding 分开） ====================
-# Ollama 服务地址
-OLLAMA_BASE_URL = "http://localhost:11434"
-
-# 生成式模型（用于聊天/问答，RAGChain 的 ChatOllama）
-LLM_MODEL_NAME = "qwen3:4b"
-
-# 嵌入模型（用于文本向量化，KnowledgeBase 的 OllamaEmbeddings）
-# 注意：必须使用专用的 embedding 模型，不能用生成式模型
-# 6G 显卡推荐选项（按质量排序）：
-#   qwen3-embedding:0.6b  - 639MB, 1024维, 100+语言支持, MTEB 64.33（推荐）
-#   qllama/bge-small-zh-v1.5 - 26MB, 384维, 中文优化, 极轻量
-#   all-minilm            - 46MB, 384维, 多语言通用
-EMBEDDING_MODEL_NAME = "qwen3-embedding:0.6b"
+# ==================== 模型配置 ====================
+# LLM_PROVIDER: LLM 提供商（ollama 或 longcat）
+# EMBEDDING_PROVIDER: Embedding 提供商（可独立于 LLM 配置）
+# 注意：模型具体配置已移至 config.py，通过 LLMFactory 统一管理
 
 # 全局对象
 knowledge_base: KnowledgeBase = None
@@ -69,21 +60,19 @@ async def lifespan(app: FastAPI):
     os.makedirs(UPLOADS_DIR, exist_ok=True)
     os.makedirs(CHROMA_DIR, exist_ok=True)
 
-    # 初始化知识库（使用专用 Embedding 模型）
+    # 初始化知识库（Embedding 提供商可独立配置）
     knowledge_base = KnowledgeBase(
         persist_directory=CHROMA_DIR,
-        embedding_model_name=EMBEDDING_MODEL_NAME,
-        base_url=OLLAMA_BASE_URL,
+        provider=EMBEDDING_PROVIDER,
     )
-    logger.info("知识库初始化完成，嵌入模型: %s", EMBEDDING_MODEL_NAME)
+    logger.info("知识库初始化完成，Embedding 提供商: %s，嵌入模型: %s", EMBEDDING_PROVIDER, LLMFactory.get_embedding_model_name())
 
-    # 初始化 RAG 问答链（使用生成式 LLM 模型）
+    # 初始化 RAG 问答链（使用 LLM 提供商配置）
     rag_chain = RAGChain(
         knowledge_base=knowledge_base,
-        model_name=LLM_MODEL_NAME,
-        base_url=OLLAMA_BASE_URL,
+        provider=LLM_PROVIDER,
     )
-    logger.info("RAG 问答链初始化完成，LLM 模型: %s", LLM_MODEL_NAME)
+    logger.info("RAG 问答链初始化完成，LLM 提供商: %s，LLM 模型: %s", LLM_PROVIDER, LLMFactory.get_llm_model_name())
 
     # 初始化数据分析模块（MySQL 连接失败不阻断启动）
     try:
@@ -97,8 +86,7 @@ async def lifespan(app: FastAPI):
         if db_manager.connect():
             data_analyzer = DataAnalyzer(
                 db_manager=db_manager,
-                llm_model=LLM_MODEL_NAME,
-                base_url=OLLAMA_BASE_URL,
+                provider=LLM_PROVIDER,
             )
             logger.info("数据分析模块初始化完成")
         else:
@@ -218,9 +206,11 @@ async def ask_question(request: AskRequest):
             "sources": result["sources"],
         }
     except ConnectionError:
+        provider = LLMFactory.get_current_provider()
+        model_name = LLMFactory.get_llm_model_name()
         raise HTTPException(
             status_code=503,
-            detail="Ollama 服务不可用，请确保 Ollama 服务已启动",
+            detail=f"模型服务不可用（提供商: {provider}，模型: {model_name}），请检查配置",
         )
     except Exception as e:
         logger.error("问答处理失败: %s", str(e))
