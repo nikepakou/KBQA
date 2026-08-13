@@ -1,1 +1,1 @@
-1. python环境 conda acitvate kbqa
+1. 使用conda kbqa虚拟环境

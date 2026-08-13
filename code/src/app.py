@@ -27,7 +27,10 @@ TEMPLATES_DIR = os.path.join(BASE_DIR, "templates")
 STATIC_DIR = os.path.join(BASE_DIR, "static")
 DATA_DIR = os.path.join(BASE_DIR, "data")
 UPLOADS_DIR = os.path.join(DATA_DIR, "uploads")
-CHROMA_DIR = os.path.join(DATA_DIR, "chroma_db")
+
+# Milvus 配置
+MILVUS_URI = "http://localhost:19530"
+MILVUS_COLLECTION = "knowledge_base"
 
 # 配置日志
 logging.basicConfig(
@@ -58,11 +61,11 @@ async def lifespan(app: FastAPI):
 
     # 确保上传目录存在
     os.makedirs(UPLOADS_DIR, exist_ok=True)
-    os.makedirs(CHROMA_DIR, exist_ok=True)
 
-    # 初始化知识库（Embedding 提供商可独立配置）
+    # 初始化知识库（使用 Milvus 向量数据库）
     knowledge_base = KnowledgeBase(
-        persist_directory=CHROMA_DIR,
+        milvus_uri=MILVUS_URI,
+        collection_name=MILVUS_COLLECTION,
         provider=EMBEDDING_PROVIDER,
     )
     logger.info("知识库初始化完成，Embedding 提供商: %s，嵌入模型: %s", EMBEDDING_PROVIDER, LLMFactory.get_embedding_model_name())
@@ -330,7 +333,6 @@ async def general_exception_handler(request: Request, exc: Exception):
 if __name__ == "__main__":
     # 确保必要的目录存在
     os.makedirs(UPLOADS_DIR, exist_ok=True)
-    os.makedirs(CHROMA_DIR, exist_ok=True)
     os.makedirs(TEMPLATES_DIR, exist_ok=True)
     os.makedirs(STATIC_DIR, exist_ok=True)
 

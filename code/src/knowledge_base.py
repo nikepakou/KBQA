@@ -15,7 +15,7 @@ from langchain_community.document_loaders import (
 from docx import Document as DocxDocument
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_text_splitters import Language
-from langchain_community.vectorstores import Chroma
+from langchain_milvus import Milvus
 from langchain_core.documents import Document
 
 from llm_factory import LLMFactory
@@ -51,7 +51,8 @@ class KnowledgeBase:
 
     def __init__(
         self,
-        persist_directory: str = "./data/chroma_db",
+        milvus_uri: str = "http://localhost:19530",
+        collection_name: str = "knowledge_base",
         embedding_model_name: Optional[str] = None,
         base_url: Optional[str] = None,
         provider: Optional[str] = None,
@@ -60,18 +61,17 @@ class KnowledgeBase:
         初始化知识库
 
         Args:
-            persist_directory: Chroma 数据库持久化目录
+            milvus_uri: Milvus 服务地址，默认 http://localhost:19530
+            collection_name: Milvus 集合名称，默认 knowledge_base
             embedding_model_name: 嵌入模型名称，为 None 时使用配置中的默认值
             base_url: 模型服务地址（保留用于向后兼容，实际使用 LLMFactory 中的配置）
             provider: 模型提供商，为 None 时使用配置中的默认值
         """
-        self.persist_directory = persist_directory
+        self.milvus_uri = milvus_uri
+        self.collection_name = collection_name
         self.embedding_model_name = embedding_model_name
         self.base_url = base_url
         self.provider = provider
-
-        # 确保存储目录存在
-        os.makedirs(self.persist_directory, exist_ok=True)
 
         # 初始化嵌入模型（使用 LLMFactory 支持多提供商）
         self.embeddings = LLMFactory.create_embedding(
@@ -79,9 +79,10 @@ class KnowledgeBase:
             provider=provider,
         )
 
-        # 初始化向量数据库
-        self.vectorstore = Chroma(
-            persist_directory=self.persist_directory,
+        # 初始化向量数据库（Milvus）
+        self.vectorstore = Milvus(
+            connection_args={"uri": self.milvus_uri},
+            collection_name=self.collection_name,
             embedding_function=self.embeddings,
         )
 
@@ -234,22 +235,14 @@ class KnowledgeBase:
             是否删除成功
         """
         try:
-            # 获取向量数据库的底层 collection
-            collection = self.vectorstore._collection
-
-            # 根据 doc_id 元数据查找要删除的记录
-            results = collection.get(where={"doc_id": doc_id})
-
-            if not results["ids"]:
-                logger.warning("未找到文档: %s", doc_id)
-                return False
+            # 使用 Milvus 的 filter 功能删除匹配的记录
+            # 构建过滤表达式
+            filter_expr = f'doc_id == "{doc_id}"'
 
             # 删除匹配的记录
-            collection.delete(ids=results["ids"])
+            self.vectorstore.delete(expr=filter_expr)
 
-            logger.info(
-                "文档删除成功: %s, 共删除 %d 个文本块", doc_id, len(results["ids"])
-            )
+            logger.info("文档删除成功: %s", doc_id)
             return True
         except Exception as e:
             logger.error("删除文档失败: %s, 错误: %s", doc_id, str(e))
@@ -263,13 +256,20 @@ class KnowledgeBase:
             文档信息列表，每个元素包含 doc_id 和 file_name
         """
         try:
-            # 获取所有记录
-            collection = self.vectorstore._collection
-            results = collection.get()
+            # 使用 Milvus 搜索获取所有文档元数据
+            # 构建查询表达式，获取所有记录的 doc_id 和 file_name
+            # 使用空向量查询获取所有记录
+            dummy_embedding = [0.0] * 1024  # 使用与嵌入模型相同维度的零向量
+            results = self.vectorstore.similarity_search(
+                query="",
+                k=10000,  # 获取足够多的记录
+                expr="doc_id != ''",  # 过滤有 doc_id 的记录
+            )
 
             # 根据 doc_id 去重，统计文档信息
             doc_map = {}
-            for i, meta in enumerate(results.get("metadatas", [])):
+            for doc in results:
+                meta = doc.metadata
                 if meta and "doc_id" in meta:
                     doc_id = meta["doc_id"]
                     if doc_id not in doc_map:

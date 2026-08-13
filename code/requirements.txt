@@ -4,7 +4,8 @@ langchain
 langchain-community
 langchain-ollama
 langchain-openai
-chromadb
+langchain-milvus
+pymilvus
 pypdf
 python-docx
 markdown
