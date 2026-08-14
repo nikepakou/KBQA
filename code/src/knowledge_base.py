@@ -103,7 +103,7 @@ class KnowledgeBase:
         #     model_name="BAAI/bge-small-zh"
         # )
 
-        logger.info("知识库初始化完成，存储目录: %s", self.persist_directory)
+        logger.info("知识库初始化完成")
 
     def _parse_document(self, file_path: str) -> list[Document]:
         """
