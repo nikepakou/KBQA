@@ -490,3 +490,160 @@ section h2 {
     color: #888;
     padding: 8px;
 }
+
+/* ==================== Agent 任务面板 ==================== */
+.agent-options {
+  margin-top: 10px;
+  font-size: 0.9em;
+  color: #7f8c8d;
+}
+.agent-options input[type="number"] {
+  width: 64px;
+  padding: 4px 8px;
+  border: 1px solid #d0d7de;
+  border-radius: 6px;
+  margin-left: 6px;
+}
+.agent-task-meta {
+  background: #eef2f7;
+  border-radius: 8px;
+  padding: 10px 14px;
+  margin-bottom: 12px;
+  font-size: 0.92em;
+  color: #445;
+}
+.agent-task-meta code {
+  background: #dde4ee;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+.tool-record-item {
+  border: 1px solid #e1e4e8;
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin-bottom: 10px;
+  background: #fafbfc;
+}
+.tool-record-header {
+  font-size: 0.92em;
+  margin-bottom: 6px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.tool-call-id {
+  margin-left: auto;
+  font-size: 0.78em;
+  color: #9aa4b2;
+  font-family: monospace;
+}
+.recovered-tag {
+  background: #fff3cd;
+  color: #856404;
+  border-radius: 4px;
+  padding: 1px 6px;
+  font-size: 0.75em;
+}
+.tool-record-args,
+.tool-record-result {
+  background: #f0f2f5;
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-size: 0.82em;
+  white-space: pre-wrap;
+  word-break: break-all;
+  margin: 4px 0;
+  font-family: Consolas, monospace;
+  color: #444;
+  max-height: 160px;
+  overflow-y: auto;
+}
+.agent-resume-area {
+  margin-top: 12px;
+}
+.resume-btn {
+  background: #2563eb;
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  padding: 8px 18px;
+  cursor: pointer;
+  font-size: 0.9em;
+}
+.resume-btn:hover {
+  background: #1d4ed8;
+}
+.resume-btn:disabled {
+  background: #93b4f5;
+  cursor: not-allowed;
+}
+.tag-ok,
+.tag-fail,
+.tag-run {
+  border-radius: 4px;
+  padding: 1px 8px;
+  font-size: 0.78em;
+  font-weight: 600;
+}
+.tag-ok {
+  background: #dcfce7;
+  color: #166534;
+}
+.tag-fail {
+  background: #fee2e2;
+  color: #991b1b;
+}
+.tag-run {
+  background: #fef9c3;
+  color: #854d0e;
+}
+
+/* 执行计划面板 */
+.plan-meta {
+  font-size: 0.88em;
+  color: #586;
+  background: #eef7f0;
+  border-radius: 6px;
+  padding: 8px 10px;
+  margin-bottom: 10px;
+}
+
+/* 调用链 Trace 时间线 */
+.trace-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 6px 0;
+  border-bottom: 1px dashed #e8e8ee;
+}
+.trace-item.trace-error {
+  background: #fff5f5;
+  border-radius: 6px;
+  padding: 6px 8px;
+}
+.trace-bar {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #2563eb;
+  margin-top: 6px;
+  flex: none;
+}
+.trace-error .trace-bar {
+  background: #dc2626;
+}
+.trace-main {
+  font-size: 0.9em;
+  flex: 1;
+}
+.trace-dur {
+  color: #9aa4b2;
+  font-size: 0.8em;
+  margin-left: 8px;
+}
+.trace-attrs {
+  color: #667;
+  font-size: 0.8em;
+  margin-top: 2px;
+}

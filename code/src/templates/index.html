@@ -17,6 +17,9 @@
         <button class="tab-btn" onclick="switchTab('analysis')">
           数据分析
         </button>
+        <button class="tab-btn" onclick="switchTab('agent')">
+          Agent 任务
+        </button>
       </div>
 
       <div id="qa-tab" class="tab-content active">
@@ -134,6 +137,84 @@
             </div>
           </div>
         </div>
+      </div>
+
+      <div id="agent-tab" class="tab-content">
+        <header>
+          <h1>🤖 Agent 任务</h1>
+          <p>断点续跑 + 工具调用幂等（Harness 控制循环，状态持久化于 SQLite）</p>
+        </header>
+
+        <main>
+          <!-- 任务输入区 -->
+          <section class="qa-section">
+            <h2>🎯 发起任务</h2>
+            <div class="qa-input-area">
+              <textarea
+                id="agentQuestionInput"
+                placeholder="描述一个需要多步完成的任务，例如：先检索知识库中关于向量数据库的资料，再统计数据库中每个部门的员工数量，最后汇总回答"
+                rows="3"
+              ></textarea>
+              <button id="agentStartBtn" onclick="startAgentTask()">执行任务</button>
+            </div>
+            <div class="agent-options">
+              <label>最大轮次：<input type="number" id="agentMaxIter" value="10" min="1" max="30" /></label>
+            </div>
+            <div id="agentStatus" class="status-message"></div>
+          </section>
+
+          <!-- 任务结果区 -->
+          <section id="agentResultSection" class="qa-section" style="display: none">
+            <h2>✅ 任务结果</h2>
+            <div id="agentTaskMeta" class="agent-task-meta"></div>
+
+            <!-- 执行计划（结构化子任务清单） -->
+            <div class="result-section" id="agentPlanSection" style="display: none">
+              <div class="section-header" onclick="toggleAgentPlan()">
+                <span>执行计划（子任务 DAG）</span>
+                <span id="agent-plan-toggle">▶</span>
+              </div>
+              <div id="agent-plan-content" style="display: none"></div>
+            </div>
+
+            <div class="answer-content">
+              <div id="agentResultText"></div>
+            </div>
+
+            <!-- 工具调用履历 -->
+            <div class="result-section">
+              <div class="section-header" onclick="toggleToolRecords()">
+                <span>工具调用履历（幂等审计）</span>
+                <span id="tool-records-toggle">▶</span>
+              </div>
+              <div id="tool-records-content" style="display: none"></div>
+            </div>
+
+            <!-- 调用链 Trace 时间线 -->
+            <div class="result-section" id="agentTraceSection" style="display: none">
+              <div class="section-header" onclick="toggleTraceTimeline()">
+                <span>调用链 Trace 时间线</span>
+                <span id="trace-toggle">▶</span>
+              </div>
+              <div id="trace-content" style="display: none"></div>
+            </div>
+
+            <!-- 断点续跑 -->
+            <div class="agent-resume-area">
+              <button class="resume-btn" id="agentResumeBtn" onclick="resumeAgentTask()" style="display: none">
+                ⏯ 断点续跑
+              </button>
+            </div>
+          </section>
+
+          <!-- 历史任务列表 -->
+          <section class="documents-section">
+            <h2>📋 历史任务</h2>
+            <div id="agentTaskList" class="document-list">
+              <p class="empty-message">暂无任务</p>
+            </div>
+          </section>
+        </main>
       </div>
     </div>
 
@@ -465,25 +546,378 @@
             "<tr><td>无数据</td></tr>";
           return;
         }
+
+        // 归一化：确保 columns 和 rows 都是数组
+        const columns = Array.isArray(data.columns) ? data.columns : [];
+        // rows 归一化：确保是数组，且每一行都是数组（不是对象）
+        const rawRows = Array.isArray(data.rows) ? data.rows : [];
+        const rows = rawRows.map((row) => {
+          if (Array.isArray(row)) return row;
+          if (row && typeof row === "object") {
+            // 如果 row 是对象（如 dict/sqlite3.Row 被 JSON 序列化），按列顺序提取值
+            return columns.map((col) => {
+              const colName = typeof col === "object" ? col.name : col;
+              return row[colName];
+            });
+          }
+          return [];
+        });
+
+        if (!columns.length) {
+          document.getElementById("result-table").innerHTML =
+            "<tr><td>无数据</td></tr>";
+          return;
+        }
+
         let html = "<thead><tr>";
-        data.columns.forEach((col) => {
+        columns.forEach((col) => {
           const colName = typeof col === "object" ? col.name : col;
           html += `<th>${colName}</th>`;
         });
         html += "</tr></thead><tbody>";
-        data.rows.forEach((row) => {
+        rows.forEach((row) => {
           html += "<tr>";
-          row.forEach((cell) => {
-            html += `<td>${cell !== null ? cell : ""}</td>`;
+          const cells = Array.isArray(row) ? row : [];
+          cells.forEach((cell) => {
+            html += `<td>${cell !== null && cell !== undefined ? cell : ""}</td>`;
           });
           html += "</tr>";
         });
+        if (!rows.length) {
+          html += `<tr><td colspan="${columns.length}">无数据</td></tr>`;
+        }
         html += "</tbody>";
         document.getElementById("result-table").innerHTML = html;
       }
 
       // 页面加载时获取表结构
       document.addEventListener("DOMContentLoaded", loadSchema);
+    </script>
+
+    <script>
+      // ==================== Agent 任务（断点续跑 + 工具调用幂等）====================
+
+      let currentAgentTaskId = null;
+
+      // 切到 Agent Tab 时刷新任务列表
+      const origSwitchTab = switchTab;
+      switchTab = function (tabName, evt) {
+        origSwitchTab(tabName, evt || event);
+        if (tabName === "agent") loadAgentTasks();
+      };
+
+      // 发起 Agent 任务
+      async function startAgentTask() {
+        const question = document.getElementById("agentQuestionInput").value.trim();
+        const statusDiv = document.getElementById("agentStatus");
+        const btn = document.getElementById("agentStartBtn");
+        const maxIter = parseInt(document.getElementById("agentMaxIter").value) || 10;
+
+        if (!question) {
+          statusDiv.className = "status-message error";
+          statusDiv.textContent = "请输入任务描述";
+          return;
+        }
+
+        btn.disabled = true;
+        btn.textContent = "执行中...";
+        statusDiv.className = "status-message info";
+        statusDiv.textContent = "Agent 正在多轮决策与工具调用中，请稍候...";
+
+        try {
+          const resp = await fetch("/api/agent/start", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ question, max_iteration: maxIter }),
+          });
+          const data = await resp.json();
+
+          if (!resp.ok) {
+            statusDiv.className = "status-message error";
+            statusDiv.textContent = `任务失败: ${data.detail || "未知错误"}`;
+            return;
+          }
+
+          currentAgentTaskId = data.task_id;
+          renderAgentResult(data);
+          statusDiv.textContent = "";
+          loadAgentTasks();
+        } catch (e) {
+          statusDiv.className = "status-message error";
+          statusDiv.textContent = `请求失败: ${e.message}`;
+        } finally {
+          btn.disabled = false;
+          btn.textContent = "执行任务";
+        }
+      }
+
+      // 断点续跑
+      async function resumeAgentTask() {
+        if (!currentAgentTaskId) return;
+        const statusDiv = document.getElementById("agentStatus");
+        const btn = document.getElementById("agentResumeBtn");
+        btn.disabled = true;
+        btn.textContent = "续跑中...";
+        statusDiv.className = "status-message info";
+        statusDiv.textContent = "正在从断点恢复任务...";
+
+        try {
+          const resp = await fetch(`/api/agent/resume/${currentAgentTaskId}`, {
+            method: "POST",
+          });
+          const data = await resp.json();
+          if (!resp.ok) {
+            statusDiv.className = "status-message error";
+            statusDiv.textContent = `续跑失败: ${data.detail || "未知错误"}`;
+            return;
+          }
+          renderAgentResult(data);
+          statusDiv.textContent = "";
+          loadAgentTasks();
+        } catch (e) {
+          statusDiv.className = "status-message error";
+          statusDiv.textContent = `续跑失败: ${e.message}`;
+        } finally {
+          btn.disabled = false;
+          btn.textContent = "⏯ 断点续跑";
+        }
+      }
+
+      // 渲染任务结果 + 工具履历
+      async function renderAgentResult(data) {
+        const section = document.getElementById("agentResultSection");
+        const meta = document.getElementById("agentTaskMeta");
+        const resumeBtn = document.getElementById("agentResumeBtn");
+        section.style.display = "block";
+
+        currentAgentTaskId = data.task_id;
+        meta.innerHTML = `任务ID: <code>${data.task_id}</code> ｜ 状态: <b>${data.status}</b>${data.resumed ? " ｜ (续跑恢复)" : ""}`;
+
+        document.getElementById("agentResultText").textContent =
+          data.result || data.error || "(无结果)";
+
+        // 拉取完整详情（含 tool_records / plan）
+        try {
+          const resp = await fetch(`/api/agent/tasks/${data.task_id}`);
+          const detail = await resp.json();
+          renderToolRecords(detail.tool_records || []);
+          renderAgentPlan(detail.plan);
+          // running/failed 状态才显示续跑按钮
+          resumeBtn.style.display = data.status === "completed" ? "none" : "inline-block";
+        } catch (e) {
+          resumeBtn.style.display = data.status === "completed" ? "none" : "inline-block";
+        }
+        // 拉取调用链 Trace 时间线
+        loadTraceTimeline(data.task_id);
+      }
+
+      // 拉取并渲染 Trace 调用链时间线
+      async function loadTraceTimeline(taskId) {
+        const section = document.getElementById("agentTraceSection");
+        const div = document.getElementById("trace-content");
+        try {
+          const resp = await fetch(`/api/agent/tasks/${taskId}/trace`);
+          const data = await resp.json();
+          const spans = data.spans || [];
+          if (!spans.length) {
+            section.style.display = "none";
+            return;
+          }
+          section.style.display = "block";
+          const opLabel = {
+            plan_create: "📋 初始规划", plan_revise: "🔄 动态重规划",
+            subtask_schedule: "📅 子任务调度", llm_call: "🧠 LLM 调用",
+            tool_call: "🔧 工具调用", idempotent_block: "🛡 幂等拦截",
+            resume: "⏯ 断点续跑", task_end: "🏁 任务结束",
+          };
+          const t0 = spans[0].start_time;
+          let html = `<div class="plan-meta">共 ${data.span_count} 个 span · 累计耗时 ${data.total_duration_ms} ms · trace_id 与 task_id 一致</div>`;
+          spans.forEach((s) => {
+            const offset = Math.max(0, s.start_time - t0);
+            const attrs = s.attributes || {};
+            let detailParts = [];
+            if (attrs.tool_name) detailParts.push(`工具: ${attrs.tool_name}`);
+            if (attrs.model) detailParts.push(`模型: ${attrs.model}`);
+            if (attrs.total_tokens) detailParts.push(`tokens: ${attrs.total_tokens}`);
+            if (attrs.iteration !== undefined) detailParts.push(`轮次: ${attrs.iteration}`);
+            if (attrs.subtask_id) detailParts.push(`子任务: ${attrs.subtask_id}`);
+            if (attrs.error) detailParts.push(`错误: ${truncate(attrs.error, 120)}`);
+            html += `
+              <div class="trace-item ${s.status === "error" ? "trace-error" : ""}">
+                <div class="trace-bar" style="margin-left:${Math.min(offset / 50, 240)}px"></div>
+                <div class="trace-main">
+                  <b>${opLabel[s.operation_name] || s.operation_name}</b>
+                  <span class="${s.status === "error" ? "tag-fail" : "tag-ok"}">${s.status === "error" ? "失败" : "OK"}</span>
+                  <span class="trace-dur">+${offset}ms · 耗时 ${s.duration_ms}ms</span>
+                  ${detailParts.length ? `<div class="trace-attrs">${escapeHtml(detailParts.join(" ｜ "))}</div>` : ""}
+                </div>
+              </div>`;
+          });
+          div.innerHTML = html;
+        } catch (e) {
+          section.style.display = "none";
+        }
+      }
+
+      // Trace 时间线折叠
+      function toggleTraceTimeline() {
+        const content = document.getElementById("trace-content");
+        const toggle = document.getElementById("trace-toggle");
+        if (content.style.display === "none") {
+          content.style.display = "block";
+          toggle.textContent = "▼";
+        } else {
+          content.style.display = "none";
+          toggle.textContent = "▶";
+        }
+      }
+
+      // 渲染执行计划（结构化子任务清单）
+      function renderAgentPlan(plan) {
+        const section = document.getElementById("agentPlanSection");
+        const div = document.getElementById("agent-plan-content");
+        if (!plan || !plan.subtasks || !plan.subtasks.length) {
+          section.style.display = "none";
+          return;
+        }
+        section.style.display = "block";
+        const statusMap = {
+          pending: "tag-run", running: "tag-run",
+          completed: "tag-ok", failed: "tag-fail",
+          skipped: "tag-run",
+        };
+        const statusText = { pending: "待执行", running: "执行中", completed: "已完成", failed: "失败", skipped: "已跳过" };
+        let html = `<div class="plan-meta">计划 v${plan.plan_version} · 状态 ${plan.plan_status} · 目标：${escapeHtml(truncate(plan.overall_goal, 60))}</div>`;
+        plan.subtasks.forEach((st, i) => {
+          const deps = st.depend_on && st.depend_on.length
+            ? ` · 依赖: ${st.depend_on.join(", ")}` : "";
+          const summary = st.result_summary
+            ? `<pre class="tool-record-result">${escapeHtml(truncate(st.result_summary, 300))}</pre>` : "";
+          html += `
+            <div class="tool-record-item">
+              <div class="tool-record-header">
+                <b>${i + 1}. ${escapeHtml(st.title)}</b>
+                <span class="${statusMap[st.status] || "tag-run"}">${statusText[st.status] || st.status}</span>
+                <span style="color:#9aa4b2;font-size:0.78em">${st.task_id}${deps}</span>
+              </div>
+              ${st.description ? `<div style="font-size:0.85em;color:#666">${escapeHtml(st.description)}</div>` : ""}
+              ${summary}
+            </div>`;
+        });
+        div.innerHTML = html;
+      }
+
+      // 执行计划折叠
+      function toggleAgentPlan() {
+        const content = document.getElementById("agent-plan-content");
+        const toggle = document.getElementById("agent-plan-toggle");
+        if (content.style.display === "none") {
+          content.style.display = "block";
+          toggle.textContent = "▼";
+        } else {
+          content.style.display = "none";
+          toggle.textContent = "▶";
+        }
+      }
+
+      // 渲染工具调用履历
+      function renderToolRecords(records) {
+        const div = document.getElementById("tool-records-content");
+        if (!records.length) {
+          div.innerHTML = '<p class="empty-message">无工具调用记录</p>';
+          return;
+        }
+        let html = "";
+        records.forEach((r, i) => {
+          const flag = r.success
+            ? '<span style="color:#16a34a">✓</span>'
+            : '<span style="color:#dc2626">✗</span>';
+          const recovered = r.recovered ? ' <span class="recovered-tag">崩溃恢复·跳过重复执行</span>' : "";
+          html += `
+            <div class="tool-record-item">
+              <div class="tool-record-header">
+                ${flag} 第 ${i + 1} 次 · <b>${r.tool_name}</b>${recovered}
+                <span class="tool-call-id" title="幂等ID">${(r.call_id || "").slice(0, 8)}</span>
+              </div>
+              <pre class="tool-record-args">参数: ${escapeHtml(JSON.stringify(r.args || {}, null, 0))}</pre>
+              <pre class="tool-record-result">${escapeHtml(truncate(String(r.result || ""), 500))}</pre>
+            </div>`;
+        });
+        div.innerHTML = html;
+      }
+
+      // 工具履历折叠
+      function toggleToolRecords() {
+        const content = document.getElementById("tool-records-content");
+        const toggle = document.getElementById("tool-records-toggle");
+        if (content.style.display === "none") {
+          content.style.display = "block";
+          toggle.textContent = "▼";
+        } else {
+          content.style.display = "none";
+          toggle.textContent = "▶";
+        }
+      }
+
+      // 加载历史任务列表
+      async function loadAgentTasks() {
+        const listDiv = document.getElementById("agentTaskList");
+        try {
+          const resp = await fetch("/api/agent/tasks");
+          const data = await resp.json();
+          if (!data.tasks || !data.tasks.length) {
+            listDiv.innerHTML = '<p class="empty-message">暂无任务</p>';
+            return;
+          }
+          let html = "";
+          data.tasks.forEach((t) => {
+            const statusClass =
+              t.status === "completed" ? "tag-ok" : t.status === "failed" ? "tag-fail" : "tag-run";
+            html += `
+              <div class="document-item" style="cursor:pointer" onclick="viewAgentTask('${t.task_id}')">
+                <div class="document-info">
+                  <span class="document-name">🤖 ${t.task_id}</span>
+                  <span class="document-meta">
+                    <span class="${statusClass}">${t.status}</span>
+                    · 工具 ${t.tool_count || t.iteration || 0} 次
+                    · ${new Date((t.created_at || 0) * 1000).toLocaleString()}
+                  </span>
+                </div>
+                ${t.status === "running" ? `<button class="resume-btn" onclick="event.stopPropagation(); currentAgentTaskId='${t.task_id}'; resumeAgentTask()">续跑</button>` : ""}
+              </div>`;
+          });
+          listDiv.innerHTML = html;
+        } catch (e) {
+          listDiv.innerHTML = `<p class="empty-message">加载失败: ${e.message}</p>`;
+        }
+      }
+
+      // 查看历史任务详情
+      async function viewAgentTask(taskId) {
+        currentAgentTaskId = taskId;
+        try {
+          const resp = await fetch(`/api/agent/tasks/${taskId}`);
+          const detail = await resp.json();
+          if (!resp.ok) return;
+          renderAgentResult({
+            task_id: taskId,
+            status: detail.summary.status,
+            result: detail.summary.final_result,
+            resumed: false,
+          });
+          document.getElementById("agentResultSection").scrollIntoView({ behavior: "smooth" });
+        } catch (e) {}
+      }
+
+      // 工具函数
+      function escapeHtml(s) {
+        return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+      }
+      function truncate(s, n) {
+        return s.length > n ? s.slice(0, n) + "..." : s;
+      }
+
+      document.addEventListener("DOMContentLoaded", loadAgentTasks);
     </script>
   </body>
 </html>

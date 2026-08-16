@@ -14,6 +14,8 @@ from db_manager import DBManager
 from config import MAX_QUERY_ROWS
 from llm_factory import LLMFactory
 
+logger = logging.getLogger(__name__)
+
 
 class DataAnalyzer:
     """数据分析器，提供自然语言转 SQL、查询执行与图表推荐能力。"""
@@ -154,6 +156,7 @@ SQL："""
         try:
             parsed = sqlparse.parse(sql)
             if not parsed:
+                logger.warning("SQL 解析结果为空，校验失败")
                 return False
 
             # 危险关键字（按整词匹配，不区分大小写）
@@ -166,10 +169,13 @@ SQL："""
                 stmt_type = stmt.get_type()
                 # 校验语句类型必须为 SELECT 或 None（WITH 等子查询解析可能返回 None）
                 if stmt_type is not None and stmt_type != "SELECT":
+                    logger.warning("SQL 语句类型 '%s' 不允许，仅支持 SELECT", stmt_type)
                     return False
                 # 校验不包含危险关键字
                 if dangerous_pattern.search(stmt.value):
+                    logger.warning("SQL 包含危险关键字，拒绝执行")
                     return False
+            logger.debug("SQL 校验通过")
             return True
         except Exception as e:
             logger.error("SQL 校验失败: %s", e)
@@ -297,6 +303,7 @@ SQL："""
         Returns:
             包含问题、SQL、数据与图表配置的字典；出错时返回包含 error 的字典
         """
+        logger.info("开始数据分析，问题: %s", question)
         sql = ""
         try:
             sql = self.generate_sql(question)

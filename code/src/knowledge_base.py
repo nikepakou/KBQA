@@ -15,10 +15,16 @@ from langchain_community.document_loaders import (
 from docx import Document as DocxDocument
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_text_splitters import Language
-from langchain_milvus import Milvus
 from langchain_core.documents import Document
 
 from llm_factory import LLMFactory
+from config import (
+    VECTOR_STORE_PROVIDER,
+    MILVUS_URI,
+    MILVUS_COLLECTION,
+    CHROMA_PERSIST_DIRECTORY,
+    CHROMA_COLLECTION,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -51,8 +57,9 @@ class KnowledgeBase:
 
     def __init__(
         self,
-        milvus_uri: str = "http://localhost:19530",
-        collection_name: str = "knowledge_base",
+        vector_store_provider: Optional[str] = None,
+        milvus_uri: Optional[str] = None,
+        collection_name: Optional[str] = None,
         embedding_model_name: Optional[str] = None,
         base_url: Optional[str] = None,
         provider: Optional[str] = None,
@@ -61,13 +68,16 @@ class KnowledgeBase:
         初始化知识库
 
         Args:
-            milvus_uri: Milvus 服务地址，默认 http://localhost:19530
-            collection_name: Milvus 集合名称，默认 knowledge_base
+            vector_store_provider: 向量数据库提供商，为 None 时使用配置中的默认值。
+                                   可选值: "milvus" | "chroma"
+            milvus_uri: Milvus 服务地址，为 None 时使用配置中的默认值
+            collection_name: 集合名称，为 None 时使用配置中的默认值
             embedding_model_name: 嵌入模型名称，为 None 时使用配置中的默认值
             base_url: 模型服务地址（保留用于向后兼容，实际使用 LLMFactory 中的配置）
             provider: 模型提供商，为 None 时使用配置中的默认值
         """
-        self.milvus_uri = milvus_uri
+        self.vector_store_provider = vector_store_provider or VECTOR_STORE_PROVIDER
+        self.milvus_uri = milvus_uri or MILVUS_URI
         self.collection_name = collection_name
         self.embedding_model_name = embedding_model_name
         self.base_url = base_url
@@ -79,13 +89,58 @@ class KnowledgeBase:
             provider=provider,
         )
 
-        # 初始化向量数据库（Milvus）
-        self.vectorstore = Milvus(
-            connection_args={"uri": self.milvus_uri},
-            collection_name=self.collection_name,
-            embedding_function=self.embeddings,
-        )
+        # 初始化向量数据库
+        self.vectorstore = self._create_vectorstore()
 
+        # 初始化文本分割器
+        self._init_text_splitter()
+
+        logger.info("知识库初始化完成")
+
+    def _create_vectorstore(self):
+        """根据配置创建向量数据库实例"""
+        if self.vector_store_provider == "milvus":
+            from langchain_milvus import Milvus
+
+            collection = self.collection_name or MILVUS_COLLECTION
+            vectorstore = Milvus(
+                connection_args={"uri": self.milvus_uri},
+                collection_name=collection,
+                embedding_function=self.embeddings,
+            )
+            logger.info(
+                "Milvus 向量数据库初始化完成，地址: %s，集合: %s",
+                self.milvus_uri,
+                collection,
+            )
+            return vectorstore
+
+        elif self.vector_store_provider == "chroma":
+            from langchain_chroma import Chroma
+
+            collection = self.collection_name or CHROMA_COLLECTION
+            persist_dir = CHROMA_PERSIST_DIRECTORY or None
+            vectorstore = Chroma(
+                collection_name=collection,
+                embedding_function=self.embeddings,
+                persist_directory=persist_dir if persist_dir else None,
+            )
+            mode = "持久化模式" if persist_dir else "内存模式"
+            logger.info(
+                "Chroma 向量数据库初始化完成（%s），集合: %s",
+                mode,
+                collection,
+            )
+            return vectorstore
+
+        else:
+            raise ValueError(
+                f"不支持的向量数据库提供商: {self.vector_store_provider}，可选值: milvus, chroma"
+            )
+
+    def _init_text_splitter(self):
+        """初始化文本分割器"""
+        logger.debug("初始化文本分割器: chunk_size=500, chunk_overlap=50")
         # 初始化文本分割器-递归切分
         # 按段落→句子→字符的优先级递归切分，尽量在自然边界处切断，生产环境最常用的方案。
         # overlap的作用：相邻chunk之间重叠一部分文字，避免关键信息正好在切割点上被截断。
@@ -96,14 +151,6 @@ class KnowledgeBase:
             length_function=len,
             separators=["\n\n", "\n", "。", "！", "？", "；", " ", ""],
         )
-        # 按token切分，留出余量，最大输入900token，低于模型1024上限
-        # self.text_splitter = TokenTextSplitter(
-        #     chunk_size=900,
-        #     chunk_overlap=100,
-        #     model_name="BAAI/bge-small-zh"
-        # )
-
-        logger.info("知识库初始化完成")
 
     def _parse_document(self, file_path: str) -> list[Document]:
         """
@@ -255,6 +302,7 @@ class KnowledgeBase:
         Returns:
             文档信息列表，每个元素包含 doc_id 和 file_name
         """
+        logger.debug("开始列出知识库文档")
         try:
             # 使用 Milvus 搜索获取所有文档元数据
             # 构建查询表达式，获取所有记录的 doc_id 和 file_name
@@ -299,4 +347,6 @@ class KnowledgeBase:
         if search_kwargs is None:
             search_kwargs = {"k": 4}
 
-        return self.vectorstore.as_retriever(search_kwargs=search_kwargs)
+        retriever = self.vectorstore.as_retriever(search_kwargs=search_kwargs)
+        logger.debug("检索器已创建，参数: %s", search_kwargs)
+        return retriever

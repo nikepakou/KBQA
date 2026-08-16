@@ -74,7 +74,7 @@ class RAGChain:
         # 构建 RAG 链
         self._chain = self._build_chain()
 
-        logger.info("RAG 问答链初始化完成，模型: %s", self.model_name)
+        logger.info("RAG 问答链初始化完成，模型: %s", LLMFactory.get_llm_model_name())
 
     def _build_chain(self):
         """
@@ -132,6 +132,7 @@ class RAGChain:
                 "sources": [{"file_name": "...", "content": "..."}]
             }
         """
+        logger.info("收到问题: %s", question)
         # 参数校验
         if not question or not question.strip():
             return {
