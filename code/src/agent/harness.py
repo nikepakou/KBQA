@@ -24,9 +24,9 @@ import threading
 import time
 from typing import Any, Dict, List, Optional
 
-from agent_state import AgentState, StateStore, new_call_id
-from agent_plan import ExecutionPlan, PlanStore, SubTask
-from agent_tools import BaseTool
+from agent.state import AgentState, StateStore, new_call_id
+from agent.plan import ExecutionPlan, PlanStore, SubTask
+from agent.tools import BaseTool
 from llm_factory import LLMFactory
 from agent_trace import (TraceCollector, get_collector,
                          set_current_trace)
@@ -68,7 +68,8 @@ class AgentHarness:
                  provider: Optional[str] = None,
                  plan_store: Optional[PlanStore] = None,
                  planner: Any = None,
-                 collector: Optional[TraceCollector] = None):
+                 collector: Optional[TraceCollector] = None,
+                 event_callback: Optional[Any] = None):
         """
         Args:
             state_store: Agent 状态持久化
@@ -77,6 +78,7 @@ class AgentHarness:
             plan_store: Plan 持久化（与 StateStore 分离）；None 时禁用规划
             planner: TaskPlanner 实例；None 时退化为纯 ReAct 模式（向后兼容）
             collector: Trace 收集器；None 时回退全局收集器（未启用则零开销）
+            event_callback: 事件回调函数，签名 callback(event_type: str, data: dict)，用于 SSE 流式推送
         """
         self.state_store = state_store
         self.plan_store = plan_store
@@ -87,6 +89,7 @@ class AgentHarness:
         self.llm = LLMFactory.create_llm(provider=provider)
         # 单机并发锁（生产多实例部署替换为 Redis 分布式锁）
         self._tool_lock = threading.Lock()
+        self._event_callback = event_callback
 
     def _emit(self, task_id: str, operation: str, status: str = "ok",
               duration_ms: float = 0.0, **attrs: Any) -> None:
@@ -97,6 +100,14 @@ class AgentHarness:
                                      status=status, **attrs)
             except Exception:  # noqa: BLE001
                 logger.debug("Trace 上报失败（不影响主流程）", exc_info=True)
+
+    def _fire_event(self, event_type: str, data: Optional[Dict[str, Any]] = None) -> None:
+        """通过回调发送事件（用于 SSE 流式推送）"""
+        if self._event_callback is not None:
+            try:
+                self._event_callback(event_type, data or {})
+            except Exception:
+                pass
 
     # ==================== LLM 决策 ====================
 
@@ -118,13 +129,22 @@ class AgentHarness:
             {"role": "system", "content": prompt}
         ] + [self._convert_message(m) for m in state.messages]
 
+        self._fire_event("thinking", {"message": "LLM 正在思考...", "iteration": state.iteration})
         response = self.llm.invoke(llm_messages)
         content = getattr(response, "content", str(response))
+        logger.info("LLM 原始返回: %s", content[:500])
         decision = self._parse_decision(content)
+
+        self._fire_event("llm_response", {
+            "raw_content": content[:300],
+            "decision_type": decision.get("type"),
+            "iteration": state.iteration,
+        })
 
         # 决策兜底：解析失败或未知工具名 → 视为 finish，避免死循环
         if decision.get("type") == "tool_call" and decision.get("tool_name") not in self.tool_map:
             logger.warning("LLM 返回未知工具名: %s，强制结束", decision.get("tool_name"))
+            self._fire_event("warning", {"message": f"未知工具: {decision.get('tool_name')}，强制结束"})
             return {"type": "finish",
                     "content": f"无法处理该请求（未知工具 {decision.get('tool_name')}）"}
         return decision
@@ -338,6 +358,7 @@ class AgentHarness:
                 self._emit(task_id, "task_end", status="error",
                            task_status="failed", iteration=state.iteration,
                            reason="max_iteration_exceeded")
+                self._fire_event("task_end", {"status": "failed", "result": state.final_result})
                 return {"task_id": task_id, "status": "failed",
                         "result": state.final_result}
 
@@ -355,6 +376,7 @@ class AgentHarness:
                 self._emit(task_id, "task_end", task_status="completed",
                            iteration=state.iteration,
                            plan_version=plan.plan_version)
+                self._fire_event("task_end", {"status": "completed", "result": state.final_result})
                 return {"task_id": task_id, "status": "completed",
                         "result": state.final_result}
 
@@ -455,6 +477,7 @@ class AgentHarness:
                 self._emit(task_id, "task_end", status="error",
                            task_status="failed", iteration=state.iteration,
                            reason="max_iteration_exceeded", mode="react")
+                self._fire_event("task_end", {"status": "failed", "result": state.final_result})
                 return {"task_id": task_id, "status": "failed",
                         "result": state.final_result}
 
@@ -464,6 +487,7 @@ class AgentHarness:
                 logger.error("LLM 决策失败: %s", e)
                 state.biz_context["last_error"] = str(e)
                 self.state_store.save(state)
+                self._fire_event("error", {"message": str(e)})
                 return {"task_id": task_id, "status": "running",
                         "error": f"模型决策失败: {e}", "resumable": True}
 
@@ -473,6 +497,7 @@ class AgentHarness:
                 self.state_store.save(state)
                 self._emit(task_id, "task_end", task_status="completed",
                            iteration=state.iteration, mode="react")
+                self._fire_event("task_end", {"status": "completed", "result": state.final_result})
                 return {"task_id": task_id, "status": "completed",
                         "result": state.final_result}
 
@@ -498,6 +523,11 @@ class AgentHarness:
                 "content": f"【系统提示】工具 {tool_name} 不存在，可用工具: {list(self.tool_map.keys())}",
             })
             self.state_store.save(state)
+            self._fire_event("tool_result", {
+                "tool_name": tool_name,
+                "success": False,
+                "result": f"工具不存在，可用工具: {list(self.tool_map.keys())}",
+            })
             return True  # 非执行失败，交由下轮决策
 
         call_id = new_call_id()
@@ -529,6 +559,12 @@ class AgentHarness:
         }
         self.state_store.save(state)
 
+        self._fire_event("tool_call", {
+            "tool_name": tool_name,
+            "args": tool_args,
+            "call_id": call_id,
+        })
+
         # 加锁执行（单机锁；生产多实例替换 Redis 分布式锁）
         with self._tool_lock:
             try:
@@ -559,6 +595,13 @@ class AgentHarness:
             "call_end_ts": time.time(),
         })
         state.pending_tool_call = None
+
+        self._fire_event("tool_result", {
+            "tool_name": tool_name,
+            "call_id": call_id,
+            "success": success,
+            "result": result_text[:500] if result_text else "",
+        })
 
         if not success:
             state.biz_context["last_tool_error"] = result_text

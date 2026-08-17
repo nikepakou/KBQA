@@ -8,8 +8,8 @@
 import logging
 
 from config import ENVIRONMENT, MYSQL_HOST, MYSQL_PORT, MYSQL_USER, MYSQL_PASSWORD, MYSQL_DATABASE
-from db_manager import DBManager
-from sqlite_db_manager import SQLiteDatabaseManager
+from database.db_manager import DBManager
+from database.sqlite_manager import SQLiteDatabaseManager
 
 logger = logging.getLogger(__name__)
 

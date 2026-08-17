@@ -16,7 +16,7 @@ import logging
 import time
 from typing import Any, Dict, List, Optional
 
-from agent_plan import ExecutionPlan, SubTask, new_plan_id, new_subtask_id
+from agent.plan import ExecutionPlan, SubTask, new_plan_id, new_subtask_id
 from llm_factory import LLMFactory
 
 logger = logging.getLogger(__name__)

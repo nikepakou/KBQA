@@ -5,6 +5,9 @@
 
 import os
 import uuid
+import json
+import queue
+import threading
 import logging
 from contextlib import asynccontextmanager
 
@@ -26,41 +29,44 @@ for _SSL_ENV in ("SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE"):
 
 import uvicorn
 from fastapi import FastAPI, Request, UploadFile, File, HTTPException
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 
-from knowledge_base import KnowledgeBase
-from rag_chain import RAGChain
+from rag.knowledge_base import KnowledgeBase
+from rag.rag_chain import RAGChain
 from config import (
     ENVIRONMENT,
     LLM_PROVIDER,
     EMBEDDING_PROVIDER,
     VECTOR_STORE_PROVIDER,
 )
-from database_factory import DatabaseFactory
-from db_manager import DBManager
-from data_analyzer import DataAnalyzer
+from database.factory import DatabaseFactory
+from database.db_manager import DBManager
+from analysis.data_analyzer import DataAnalyzer
 from llm_factory import LLMFactory
-from agent_state import SQLiteStateStore, state_summary
-from agent_plan import SQLitePlanStore
-from agent_tools import build_default_tools
-from agent_planner import TaskPlanner
-from agent_harness import AgentHarness
+from agent.state import SQLiteStateStore, state_summary
+from agent.plan import SQLitePlanStore
+from agent.tools import build_default_tools
+from agent.planner import TaskPlanner
+from agent.harness import AgentHarness
 from agent_trace import TraceCollector, get_collector, set_collector
 
 # 基于当前文件位置定位目录，避免工作目录不同导致路径错误
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 TEMPLATES_DIR = os.path.join(BASE_DIR, "templates")
 STATIC_DIR = os.path.join(BASE_DIR, "static")
+# 内存数据库持久化目录
 DATA_DIR = os.path.join(BASE_DIR, "data")
+
+# 文档上传存储目录
 UPLOADS_DIR = os.path.join(DATA_DIR, "uploads")
 
-# 配置日志
+# 配置日志（含代码行号）
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    format="%(asctime)s | %(levelname)-8s | %(name)s:%(lineno)d | %(message)s",
 )
 logger = logging.getLogger(__name__)
 
@@ -127,7 +133,7 @@ async def lifespan(app: FastAPI):
         if db_manager.connect():
             # 如果是本地环境（SQLite），创建示例表
             if ENVIRONMENT == "local":
-                from sqlite_db_manager import SQLiteDatabaseManager
+                from database.sqlite_manager import SQLiteDatabaseManager
                 if isinstance(db_manager, SQLiteDatabaseManager):
                     db_manager.create_sample_tables()
                     logger.info("已创建 SQLite 示例表和数据")
@@ -447,6 +453,85 @@ async def agent_start(request: AgentStartRequest):
     except Exception as e:
         logger.error("Agent 任务执行失败: %s", str(e))
         raise HTTPException(status_code=500, detail=f"Agent 任务执行失败: {str(e)}")
+
+
+@app.post("/api/agent/stream")
+async def agent_stream(request: AgentStartRequest):
+    """流式启动 Agent 任务：SSE 输出思考过程 + 工具执行过程"""
+    if not request.question or not request.question.strip():
+        raise HTTPException(status_code=400, detail="问题不能为空")
+    if not agent_harness:
+        raise HTTPException(status_code=503, detail="Agent 功能未就绪")
+
+    task_id = (request.task_id or f"task_{uuid.uuid4().hex[:12]}").strip()
+    max_iter = max(1, min(request.max_iteration, 30))
+    logger.info("收到流式 Agent 请求: task_id=%s", task_id)
+
+    async def event_generator():
+        event_queue: queue.Queue = queue.Queue()
+        sentinel = object()
+
+        def event_callback(event_type: str, data: dict):
+            event_queue.put({"type": event_type, "data": data})
+
+        # 创建带事件回调的 harness 实例
+        from agent.harness import AgentHarness
+        stream_harness = AgentHarness(
+            state_store=agent_harness.state_store,
+            tools=list(agent_harness.tool_map.values()),
+            provider=agent_harness.provider,
+            plan_store=agent_harness.plan_store,
+            planner=agent_harness.planner,
+            collector=agent_harness.collector,
+            event_callback=event_callback,
+        )
+
+        def run():
+            try:
+                event_callback("task_start", {"task_id": task_id, "question": request.question})
+
+                state = stream_harness.state_store.load(task_id)
+                if state is not None:
+                    event_callback("info", {"message": f"任务 {task_id} 已存在，正在续跑..."})
+                    result = stream_harness.resume_task(task_id)
+                else:
+                    result = stream_harness.start_task(
+                        task_id=task_id,
+                        user_query=request.question.strip(),
+                        max_iter=max_iter,
+                    )
+
+                event_callback("task_end", {"result": result})
+            except Exception as e:
+                logger.error("流式 Agent 执行异常: %s", e)
+                event_callback("error", {"message": str(e)})
+            finally:
+                event_queue.put(sentinel)
+
+        thread = threading.Thread(target=run, daemon=True)
+        thread.start()
+
+        while True:
+            try:
+                event = event_queue.get(timeout=1)
+            except queue.Empty:
+                yield f"data: {json.dumps({'type': 'heartbeat'}, ensure_ascii=False)}\n\n"
+                continue
+
+            if event is sentinel:
+                break
+
+            yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @app.post("/api/agent/resume/{task_id}")

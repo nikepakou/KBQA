@@ -17,9 +17,7 @@
         <button class="tab-btn" onclick="switchTab('analysis')">
           数据分析
         </button>
-        <button class="tab-btn" onclick="switchTab('agent')">
-          Agent 任务
-        </button>
+        <button class="tab-btn" onclick="switchTab('agent')">Agent 任务</button>
       </div>
 
       <div id="qa-tab" class="tab-content active">
@@ -142,7 +140,9 @@
       <div id="agent-tab" class="tab-content">
         <header>
           <h1>🤖 Agent 任务</h1>
-          <p>断点续跑 + 工具调用幂等（Harness 控制循环，状态持久化于 SQLite）</p>
+          <p>
+            断点续跑 + 工具调用幂等（Harness 控制循环，状态持久化于 SQLite）
+          </p>
         </header>
 
         <main>
@@ -155,21 +155,38 @@
                 placeholder="描述一个需要多步完成的任务，例如：先检索知识库中关于向量数据库的资料，再统计数据库中每个部门的员工数量，最后汇总回答"
                 rows="3"
               ></textarea>
-              <button id="agentStartBtn" onclick="startAgentTask()">执行任务</button>
+              <button id="agentStartBtn" onclick="startAgentTask()">
+                执行任务
+              </button>
             </div>
             <div class="agent-options">
-              <label>最大轮次：<input type="number" id="agentMaxIter" value="10" min="1" max="30" /></label>
+              <label
+                >最大轮次：<input
+                  type="number"
+                  id="agentMaxIter"
+                  value="10"
+                  min="1"
+                  max="30"
+              /></label>
             </div>
             <div id="agentStatus" class="status-message"></div>
           </section>
 
           <!-- 任务结果区 -->
-          <section id="agentResultSection" class="qa-section" style="display: none">
+          <section
+            id="agentResultSection"
+            class="qa-section"
+            style="display: none"
+          >
             <h2>✅ 任务结果</h2>
             <div id="agentTaskMeta" class="agent-task-meta"></div>
 
             <!-- 执行计划（结构化子任务清单） -->
-            <div class="result-section" id="agentPlanSection" style="display: none">
+            <div
+              class="result-section"
+              id="agentPlanSection"
+              style="display: none"
+            >
               <div class="section-header" onclick="toggleAgentPlan()">
                 <span>执行计划（子任务 DAG）</span>
                 <span id="agent-plan-toggle">▶</span>
@@ -191,7 +208,11 @@
             </div>
 
             <!-- 调用链 Trace 时间线 -->
-            <div class="result-section" id="agentTraceSection" style="display: none">
+            <div
+              class="result-section"
+              id="agentTraceSection"
+              style="display: none"
+            >
               <div class="section-header" onclick="toggleTraceTimeline()">
                 <span>调用链 Trace 时间线</span>
                 <span id="trace-toggle">▶</span>
@@ -201,7 +222,12 @@
 
             <!-- 断点续跑 -->
             <div class="agent-resume-area">
-              <button class="resume-btn" id="agentResumeBtn" onclick="resumeAgentTask()" style="display: none">
+              <button
+                class="resume-btn"
+                id="agentResumeBtn"
+                onclick="resumeAgentTask()"
+                style="display: none"
+              >
                 ⏯ 断点续跑
               </button>
             </div>
@@ -608,10 +634,13 @@
 
       // 发起 Agent 任务
       async function startAgentTask() {
-        const question = document.getElementById("agentQuestionInput").value.trim();
+        const question = document
+          .getElementById("agentQuestionInput")
+          .value.trim();
         const statusDiv = document.getElementById("agentStatus");
         const btn = document.getElementById("agentStartBtn");
-        const maxIter = parseInt(document.getElementById("agentMaxIter").value) || 10;
+        const maxIter =
+          parseInt(document.getElementById("agentMaxIter").value) || 10;
 
         if (!question) {
           statusDiv.className = "status-message error";
@@ -622,26 +651,162 @@
         btn.disabled = true;
         btn.textContent = "执行中...";
         statusDiv.className = "status-message info";
-        statusDiv.textContent = "Agent 正在多轮决策与工具调用中，请稍候...";
+        statusDiv.textContent = "Agent 正在执行中...";
+
+        // 显示实时过程区域
+        const section = document.getElementById("agentResultSection");
+        section.style.display = "block";
+        document.getElementById("agentTaskMeta").innerHTML = "";
+        document.getElementById("agentResultText").innerHTML = "";
+
+        // 创建实时日志容器
+        let streamLog = document.getElementById("agentStreamLog");
+        if (!streamLog) {
+          streamLog = document.createElement("div");
+          streamLog.id = "agentStreamLog";
+          streamLog.className = "agent-stream-log";
+          section.insertBefore(streamLog, section.firstChild);
+        }
+        streamLog.innerHTML = "";
+        streamLog.style.display = "block";
+
+        const addLog = (type, msg) => {
+          const time = new Date().toLocaleTimeString();
+          const colors = {
+            thinking: "#3b82f6",
+            tool_call: "#8b5cf6",
+            tool_result: "#10b981",
+            llm_response: "#f59e0b",
+            task_start: "#6b7280",
+            task_end: "#10b981",
+            info: "#6b7280",
+            warning: "#f59e0b",
+            error: "#ef4444",
+            heartbeat: "#d1d5db",
+          };
+          const color = colors[type] || "#6b7280";
+          const icon = {
+            thinking: "🧠",
+            tool_call: "🔧",
+            tool_result: "✅",
+            llm_response: "💭",
+            task_start: "🚀",
+            task_end: "🎉",
+            info: "ℹ️",
+            warning: "⚠️",
+            error: "❌",
+            heartbeat: "💓",
+          };
+          const div = document.createElement("div");
+          div.className = `stream-event event-${type}`;
+          div.style.borderLeft = `3px solid ${color}`;
+          div.style.padding = "6px 10px";
+          div.style.marginBottom = "4px";
+          div.style.background = "#f9fafb";
+          div.style.borderRadius = "4px";
+          div.innerHTML = `<span style="color:${color};font-weight:bold">${icon[type] || "📌"} [${time}]</span> <span style="color:#374151">${msg}</span>`;
+          streamLog.appendChild(div);
+          streamLog.scrollTop = streamLog.scrollHeight;
+        };
 
         try {
-          const resp = await fetch("/api/agent/start", {
+          const response = await fetch("/api/agent/stream", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ question, max_iteration: maxIter }),
           });
-          const data = await resp.json();
 
-          if (!resp.ok) {
+          if (!response.ok) {
+            const data = await response.json();
             statusDiv.className = "status-message error";
             statusDiv.textContent = `任务失败: ${data.detail || "未知错误"}`;
+            btn.disabled = false;
+            btn.textContent = "执行任务";
             return;
           }
 
-          currentAgentTaskId = data.task_id;
-          renderAgentResult(data);
+          const reader = response.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = "";
+          let finalResult = null;
+
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split("\n");
+            buffer = lines.pop();
+
+            for (const line of lines) {
+              const trimmed = line.trim();
+              if (!trimmed.startsWith("data:")) continue;
+
+              try {
+                const payload = JSON.parse(trimmed.slice(5).trim());
+                const { type, data } = payload;
+
+                switch (type) {
+                  case "heartbeat":
+                    break;
+                  case "task_start":
+                    addLog(type, `任务开始: ${data.task_id}`);
+                    break;
+                  case "thinking":
+                    addLog(type, `${data.message} (第 ${data.iteration} 轮)`);
+                    break;
+                  case "llm_response":
+                    addLog(
+                      type,
+                      `LLM 返回 [${data.decision_type}]: ${(data.raw_content || "").substring(0, 100)}`,
+                    );
+                    break;
+                  case "tool_call":
+                    addLog(
+                      type,
+                      `调用工具: ${data.tool_name} 参数: ${JSON.stringify(data.args || {}).substring(0, 100)}`,
+                    );
+                    break;
+                  case "tool_result":
+                    addLog(
+                      type,
+                      `工具 ${data.tool_name} ${data.success ? "成功" : "失败"}: ${(data.result || "").substring(0, 150)}`,
+                    );
+                    break;
+                  case "info":
+                    addLog(type, data.message || "");
+                    break;
+                  case "warning":
+                    addLog(type, data.message || "");
+                    break;
+                  case "task_end":
+                    finalResult = data.result;
+                    addLog(
+                      type,
+                      `任务完成: ${data.result.status || "unknown"}`,
+                    );
+                    if (data.result.result) {
+                      document.getElementById("agentResultText").innerHTML =
+                        `<p><strong>最终结果：</strong></p><p>${data.result.result}</p>`;
+                    }
+                    break;
+                  case "error":
+                    addLog(type, `错误: ${data.message}`);
+                    break;
+                  default:
+                    addLog(type, JSON.stringify(data).substring(0, 200));
+                }
+              } catch (e) {
+                console.warn("SSE 解析失败:", e, trimmed);
+              }
+            }
+          }
+
+          if (finalResult) {
+            currentAgentTaskId = finalResult.task_id;
+            loadAgentTasks();
+          }
           statusDiv.textContent = "";
-          loadAgentTasks();
         } catch (e) {
           statusDiv.className = "status-message error";
           statusDiv.textContent = `请求失败: ${e.message}`;
@@ -703,9 +868,11 @@
           renderToolRecords(detail.tool_records || []);
           renderAgentPlan(detail.plan);
           // running/failed 状态才显示续跑按钮
-          resumeBtn.style.display = data.status === "completed" ? "none" : "inline-block";
+          resumeBtn.style.display =
+            data.status === "completed" ? "none" : "inline-block";
         } catch (e) {
-          resumeBtn.style.display = data.status === "completed" ? "none" : "inline-block";
+          resumeBtn.style.display =
+            data.status === "completed" ? "none" : "inline-block";
         }
         // 拉取调用链 Trace 时间线
         loadTraceTimeline(data.task_id);
@@ -725,10 +892,14 @@
           }
           section.style.display = "block";
           const opLabel = {
-            plan_create: "📋 初始规划", plan_revise: "🔄 动态重规划",
-            subtask_schedule: "📅 子任务调度", llm_call: "🧠 LLM 调用",
-            tool_call: "🔧 工具调用", idempotent_block: "🛡 幂等拦截",
-            resume: "⏯ 断点续跑", task_end: "🏁 任务结束",
+            plan_create: "📋 初始规划",
+            plan_revise: "🔄 动态重规划",
+            subtask_schedule: "📅 子任务调度",
+            llm_call: "🧠 LLM 调用",
+            tool_call: "🔧 工具调用",
+            idempotent_block: "🛡 幂等拦截",
+            resume: "⏯ 断点续跑",
+            task_end: "🏁 任务结束",
           };
           const t0 = spans[0].start_time;
           let html = `<div class="plan-meta">共 ${data.span_count} 个 span · 累计耗时 ${data.total_duration_ms} ms · trace_id 与 task_id 一致</div>`;
@@ -738,10 +909,14 @@
             let detailParts = [];
             if (attrs.tool_name) detailParts.push(`工具: ${attrs.tool_name}`);
             if (attrs.model) detailParts.push(`模型: ${attrs.model}`);
-            if (attrs.total_tokens) detailParts.push(`tokens: ${attrs.total_tokens}`);
-            if (attrs.iteration !== undefined) detailParts.push(`轮次: ${attrs.iteration}`);
-            if (attrs.subtask_id) detailParts.push(`子任务: ${attrs.subtask_id}`);
-            if (attrs.error) detailParts.push(`错误: ${truncate(attrs.error, 120)}`);
+            if (attrs.total_tokens)
+              detailParts.push(`tokens: ${attrs.total_tokens}`);
+            if (attrs.iteration !== undefined)
+              detailParts.push(`轮次: ${attrs.iteration}`);
+            if (attrs.subtask_id)
+              detailParts.push(`子任务: ${attrs.subtask_id}`);
+            if (attrs.error)
+              detailParts.push(`错误: ${truncate(attrs.error, 120)}`);
             html += `
               <div class="trace-item ${s.status === "error" ? "trace-error" : ""}">
                 <div class="trace-bar" style="margin-left:${Math.min(offset / 50, 240)}px"></div>
@@ -782,17 +957,28 @@
         }
         section.style.display = "block";
         const statusMap = {
-          pending: "tag-run", running: "tag-run",
-          completed: "tag-ok", failed: "tag-fail",
+          pending: "tag-run",
+          running: "tag-run",
+          completed: "tag-ok",
+          failed: "tag-fail",
           skipped: "tag-run",
         };
-        const statusText = { pending: "待执行", running: "执行中", completed: "已完成", failed: "失败", skipped: "已跳过" };
+        const statusText = {
+          pending: "待执行",
+          running: "执行中",
+          completed: "已完成",
+          failed: "失败",
+          skipped: "已跳过",
+        };
         let html = `<div class="plan-meta">计划 v${plan.plan_version} · 状态 ${plan.plan_status} · 目标：${escapeHtml(truncate(plan.overall_goal, 60))}</div>`;
         plan.subtasks.forEach((st, i) => {
-          const deps = st.depend_on && st.depend_on.length
-            ? ` · 依赖: ${st.depend_on.join(", ")}` : "";
+          const deps =
+            st.depend_on && st.depend_on.length
+              ? ` · 依赖: ${st.depend_on.join(", ")}`
+              : "";
           const summary = st.result_summary
-            ? `<pre class="tool-record-result">${escapeHtml(truncate(st.result_summary, 300))}</pre>` : "";
+            ? `<pre class="tool-record-result">${escapeHtml(truncate(st.result_summary, 300))}</pre>`
+            : "";
           html += `
             <div class="tool-record-item">
               <div class="tool-record-header">
@@ -832,7 +1018,9 @@
           const flag = r.success
             ? '<span style="color:#16a34a">✓</span>'
             : '<span style="color:#dc2626">✗</span>';
-          const recovered = r.recovered ? ' <span class="recovered-tag">崩溃恢复·跳过重复执行</span>' : "";
+          const recovered = r.recovered
+            ? ' <span class="recovered-tag">崩溃恢复·跳过重复执行</span>'
+            : "";
           html += `
             <div class="tool-record-item">
               <div class="tool-record-header">
@@ -872,7 +1060,11 @@
           let html = "";
           data.tasks.forEach((t) => {
             const statusClass =
-              t.status === "completed" ? "tag-ok" : t.status === "failed" ? "tag-fail" : "tag-run";
+              t.status === "completed"
+                ? "tag-ok"
+                : t.status === "failed"
+                  ? "tag-fail"
+                  : "tag-run";
             html += `
               <div class="document-item" style="cursor:pointer" onclick="viewAgentTask('${t.task_id}')">
                 <div class="document-info">
@@ -905,13 +1097,18 @@
             result: detail.summary.final_result,
             resumed: false,
           });
-          document.getElementById("agentResultSection").scrollIntoView({ behavior: "smooth" });
+          document
+            .getElementById("agentResultSection")
+            .scrollIntoView({ behavior: "smooth" });
         } catch (e) {}
       }
 
       // 工具函数
       function escapeHtml(s) {
-        return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+        return s
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;");
       }
       function truncate(s, n) {
         return s.length > n ? s.slice(0, n) + "..." : s;

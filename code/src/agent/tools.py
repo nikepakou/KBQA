@@ -82,13 +82,12 @@ class SQLQueryTool(BaseTool):
             raise ValueError("sql_query 缺少必填参数 question")
 
         analyzer = self.data_analyzer
-        sql = analyzer.generate_sql(str(question).strip())
-        # 只读校验：仅允许 SELECT（拒绝 INSERT/UPDATE/DELETE/DROP 等）
-        if not analyzer._validate_sql(sql):
-            raise ValueError(f"生成的 SQL 未通过只读校验，拒绝执行: {sql}")
-        query_result = analyzer.db_manager.execute_query(sql)
+        sql, params = analyzer.generate_sql(str(question).strip())
+        # 结构化查询计划已通过白名单校验，可直接执行
+        query_result = analyzer.db_manager.execute_query(sql, params)
         return {
             "sql": sql,
+            "params": list(params) if params else [],
             "columns": query_result.get("columns", []),
             "rows": query_result.get("rows", [])[:20],  # 控制注入 LLM 的上下文长度
         }

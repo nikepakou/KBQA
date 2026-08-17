@@ -25,7 +25,7 @@ wheels/
 .env.local
 code/.env
 code/.env.local
-code/src/__pycache__/
+code/src/__pycache__/*
 
 # ==================== IDE ====================
 .idea/

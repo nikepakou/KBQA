@@ -153,7 +153,9 @@ class RAGChain:
             source_docs = retriever.invoke(question)
 
             # 执行 RAG 链生成答案
+            logger.info("开始执行 RAG 链生成答案，问题: %s", question)
             answer = self._chain.invoke(question)
+            logger.info("RAG 链生成完成，答案: %s", answer[:300])
 
             # 整理来源文档信息
             sources = []

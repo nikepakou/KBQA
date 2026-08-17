@@ -282,12 +282,20 @@ class KnowledgeBase:
             是否删除成功
         """
         try:
-            # 使用 Milvus 的 filter 功能删除匹配的记录
-            # 构建过滤表达式
-            filter_expr = f'doc_id == "{doc_id}"'
-
-            # 删除匹配的记录
-            self.vectorstore.delete(expr=filter_expr)
+            if self.vector_store_provider == "milvus":
+                # 使用底层 pymilvus client 删除匹配的记录
+                client = self.vectorstore.client
+                filter_expr = f'doc_id == "{doc_id}"'
+                client.delete(
+                    collection_name=self.collection_name,
+                    filter=filter_expr,
+                )
+            else:
+                # Chroma: 使用元数据过滤删除
+                collection = self.vectorstore._collection
+                results = collection.get(where={"doc_id": doc_id})
+                if results["ids"]:
+                    collection.delete(ids=results["ids"])
 
             logger.info("文档删除成功: %s", doc_id)
             return True
@@ -304,30 +312,45 @@ class KnowledgeBase:
         """
         logger.debug("开始列出知识库文档")
         try:
-            # 使用 Milvus 搜索获取所有文档元数据
-            # 构建查询表达式，获取所有记录的 doc_id 和 file_name
-            # 使用空向量查询获取所有记录
-            dummy_embedding = [0.0] * 1024  # 使用与嵌入模型相同维度的零向量
-            results = self.vectorstore.similarity_search(
-                query="",
-                k=10000,  # 获取足够多的记录
-                expr="doc_id != ''",  # 过滤有 doc_id 的记录
-            )
-
-            # 根据 doc_id 去重，统计文档信息
-            doc_map = {}
-            for doc in results:
-                meta = doc.metadata
-                if meta and "doc_id" in meta:
-                    doc_id = meta["doc_id"]
+            if self.vector_store_provider == "milvus":
+                # 使用底层 pymilvus client 直接查询元数据
+                client = self.vectorstore.client
+                collection = self.collection_name or MILVUS_COLLECTION
+                results = client.query(
+                    collection_name=collection,
+                    filter='doc_id != ""',
+                    output_fields=["doc_id", "file_name", "file_path"],
+                    limit=10000,
+                )
+                doc_map = {}
+                for row in results:
+                    doc_id = row.get("doc_id", "")
+                    if not doc_id:
+                        continue
                     if doc_id not in doc_map:
                         doc_map[doc_id] = {
                             "doc_id": doc_id,
-                            "file_name": meta.get("file_name", "未知"),
-                            "file_path": meta.get("file_path", ""),
+                            "file_name": row.get("file_name", "未知"),
+                            "file_path": row.get("file_path", ""),
                             "chunk_count": 0,
                         }
                     doc_map[doc_id]["chunk_count"] += 1
+            else:
+                # Chroma: 使用底层 collection 查询
+                collection = self.vectorstore._collection
+                results = collection.get()
+                doc_map = {}
+                for i, meta in enumerate(results.get("metadatas", [])):
+                    if meta and "doc_id" in meta:
+                        doc_id = meta["doc_id"]
+                        if doc_id not in doc_map:
+                            doc_map[doc_id] = {
+                                "doc_id": doc_id,
+                                "file_name": meta.get("file_name", "未知"),
+                                "file_path": meta.get("file_path", ""),
+                                "chunk_count": 0,
+                            }
+                        doc_map[doc_id]["chunk_count"] += 1
 
             return list(doc_map.values())
         except Exception as e:

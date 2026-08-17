@@ -120,11 +120,12 @@ class DBManager:
 
         return schema
 
-    def execute_query(self, sql: str) -> dict:
+    def execute_query(self, sql: str, params: tuple = None) -> dict:
         """执行 SELECT 查询并返回列与行数据。
 
         - 校验是否为 SELECT/WITH 查询，否则抛出 ValueError
         - 若 SQL 未包含 LIMIT，自动追加 LIMIT {MAX_QUERY_ROWS}
+        - 支持参数化查询：params 为元组时使用占位符绑定
         - 返回 {"columns": [...], "rows": [...]}，行以 tuple 形式返回
         - 出错时记录日志并重新抛出异常
         """
@@ -135,9 +136,16 @@ class DBManager:
 
         # 若 SQL 未包含 LIMIT，则自动追加行数限制
         final_sql = sql
+        final_params = params
         if not self._has_limit(sql):
-            final_sql = f"{sql.rstrip(';')} LIMIT {MAX_QUERY_ROWS}"
-            logger.info("已自动追加 LIMIT %d 限制查询行数", MAX_QUERY_ROWS)
+            limit_value = MAX_QUERY_ROWS
+            if params:
+                # 参数化查询时，LIMIT 也通过参数传递
+                final_sql = f"{sql.rstrip(';')} LIMIT %s"
+                final_params = (*params, limit_value)
+            else:
+                final_sql = f"{sql.rstrip(';')} LIMIT {limit_value}"
+            logger.info("已自动追加 LIMIT %d 限制查询行数", limit_value)
 
         try:
             if self._connection is None and not self.connect():
@@ -146,7 +154,10 @@ class DBManager:
             # 使用普通 Cursor（非 DictCursor），保证行以 tuple 返回
             cursor = self._connection.cursor()
             try:
-                cursor.execute(final_sql)
+                if final_params is not None:
+                    cursor.execute(final_sql, final_params)
+                else:
+                    cursor.execute(final_sql)
                 rows = cursor.fetchall()
                 # 从 cursor.description 提取列名
                 if cursor.description:
@@ -158,7 +169,7 @@ class DBManager:
             finally:
                 cursor.close()
         except Exception as e:
-            logger.error("查询执行失败: SQL=%s，错误: %s", final_sql, e)
+            logger.error("查询执行失败: SQL=%s, params=%s, 错误: %s", final_sql, final_params, e)
             raise
 
     def _is_select(self, sql: str) -> bool:

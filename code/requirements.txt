@@ -5,6 +5,7 @@ langchain-community
 langchain-ollama
 langchain-openai
 langchain-milvus
+langchain_chroma
 pymilvus
 pypdf
 python-docx
