@@ -1,0 +1,15 @@
+{
+  "table": "orders",
+  "fields": [
+    {"name": "order_id", "alias": "订单ID"},
+    {"name": "total_amount", "alias": "总金额", "function": "SUM"},
+    {"name": "created_at", "alias": "创建时间"}
+  ],
+  "filters": [
+    {"field": "status", "operator": "=", "value": "paid"},
+    {"field": "created_at", "operator": ">=", "value": "2024-01-01"}
+  ],
+  "group_by": ["order_id"],
+  "order_by": [{"field": "total_amount", "direction": "DESC"}],
+  "limit": 10
+}

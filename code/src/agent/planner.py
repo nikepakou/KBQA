@@ -9,6 +9,12 @@ Agent 任务规划器模块
 防非结构化输出（文档"常见落地优化点"）：
 - 强制 JSON 协议提示词 + 稳健解析 + 结构校验 + 兜底单任务计划
 - 防过度规划：revise_plan 仅由 Harness 在子任务失败时触发，且带次数上限
+
+提示词模板（Jinja2 分离）：
+- system/planner_initial.j2：初始规划系统提示词
+- system/planner_revise.j2：动态修正系统提示词
+- user/planner_initial_user.j2：初始规划用户消息
+- user/planner_revise_user.j2：动态修正用户消息
 """
 
 import json
@@ -18,29 +24,9 @@ from typing import Any, Dict, List, Optional
 
 from agent.plan import ExecutionPlan, SubTask, new_plan_id, new_subtask_id
 from llm_factory import LLMFactory
+from prompt.loader import render_system, render_user
 
 logger = logging.getLogger(__name__)
-
-PLANNER_SYSTEM_PROMPT = """你是一个任务规划专家。请将用户总目标拆解为有序的子任务清单。
-
-输出要求（严格遵守）：
-1. 只返回一个 JSON 对象，格式：{{"subtasks": [...]}}，禁止任何其他文字、解释或 markdown 标记
-2. 每个子任务对象包含字段：
-   - "title": 任务名称（简短）
-   - "description": 任务目标（一句话）
-   - "depend_on": 依赖的前置子任务序号列表（如 [1] 表示依赖第1个子任务，无依赖为 []）
-   - "required_tools": 预估需要的工具名列表，可用工具：{tools}
-3. 子任务按建议执行顺序排列，数量 1-6 个，避免过度拆解
-4. 每个子任务应是单个工具或单轮对话可完成的最小单元"""
-
-REVISE_SYSTEM_PROMPT = """你是一个任务规划专家。当前计划执行遇到问题，请修正子任务清单。
-
-输出要求（严格遵守）：
-1. 只返回一个 JSON 对象，格式：{{"subtasks": [...]}}，禁止任何其他文字
-2. 子任务字段同原始规划（title / description / depend_on / required_tools）
-3. 可以：跳过无法完成的任务（不再列出）、新增替代任务、调整顺序
-4. 已完成的任务无需保留；depend_on 序号基于你新输出的清单重新编号
-5. 可用工具：{tools}"""
 
 
 class TaskPlanner:
@@ -69,12 +55,13 @@ class TaskPlanner:
         LLM 输出非法/解析失败时，兜底为单任务计划（目标本身作为唯一子任务），
         保证任务始终可执行——规划失败不阻塞执行。
         """
-        prompt = PLANNER_SYSTEM_PROMPT.format(tools=", ".join(self.tool_names))
+        prompt = render_system("planner_initial", tools=", ".join(self.tool_names))
+        user_msg = render_user("planner_initial_user", user_goal=user_goal)
         subtasks: Optional[List[SubTask]] = None
         try:
             response = self.llm.invoke([
                 {"role": "system", "content": prompt},
-                {"role": "user", "content": f"总目标：{user_goal}"},
+                {"role": "user", "content": user_msg},
             ])
             content = getattr(response, "content", str(response))
             subtasks = self._parse_subtasks(content)
@@ -127,12 +114,12 @@ class TaskPlanner:
             {"title": st.title, "status": st.status, "result": st.result_summary}
             for st in plan.subtasks
         ]
-        prompt = REVISE_SYSTEM_PROMPT.format(tools=", ".join(self.tool_names))
-        user_msg = (
-            f"原始目标：{plan.overall_goal}\n"
-            f"当前执行进度：{json.dumps(progress, ensure_ascii=False, default=str)}\n"
-            f"遇到的问题：{failure_info}\n"
-            f"请输出修正后的完整子任务清单。"
+        prompt = render_system("planner_revise", tools=", ".join(self.tool_names))
+        user_msg = render_user(
+            "planner_revise_user",
+            overall_goal=plan.overall_goal,
+            progress_json=json.dumps(progress, ensure_ascii=False, default=str),
+            failure_info=failure_info,
         )
         try:
             response = self.llm.invoke([

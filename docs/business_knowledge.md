@@ -638,3 +638,92 @@ SQLite 存储，异步写入），实现"调试靠看"——Agent 每一步的�
 - [ ] 成本观测：longcat/deepseek 路径按 token 单价折算成本，单任务超阈值告警（一期已记录 token 数）
 - [ ] Trace 清理策略：按保留天数定期清理 agent_traces.db
 - [ ] 二期（触发式）：Langfuse/Phoenix 自托管，OTLP 上报替换 SQLite 后端
+
+---
+
+## 2026-08-17: 提示词与代码分离（Jinja2 模板化）
+
+### 业务需求描述
+
+将散落在各业务模块中的 Prompt 字符串从 Python 代码中抽离，统一存放为 Jinja2 模板文件，
+按 `system` / `user` / `fewshot` 三类组织到 `src/prompt` 目录下，便于：
+1. 提示词集中维护，业务人员可直接编辑 `.j2` 文件调整提示词而无需改 Python 代码
+2. 系统角色提示词、用户消息模板、few-shot 示例分类清晰
+3. 避免提示词在代码中通过 f-string/字符串拼接导致的花括号转义混乱（`{{}}` vs `{}`）
+
+### 实现方案
+
+#### 1. 目录结构
+
+```
+code/src/prompt/
+├── __init__.py            # 包入口，导出渲染函数
+├── loader.py              # Jinja2 环境与渲染 API
+├── system/                # 系统角色提示词（角色定义 + 规则 + 输出格式）
+│   ├── rag_qa.j2                       # RAG 问答系统提示词
+│   ├── data_analyzer_query_plan.j2     # NL2SQL 查询计划生成系统提示词
+│   ├── data_analyzer_chart.j2          # ECharts 图表推荐系统提示词
+│   ├── planner_initial.j2              # Planner 初始规划系统提示词
+│   ├── planner_revise.j2               # Planner 动态修正系统提示词
+│   ├── harness_decision.j2             # Harness 规划模式决策系统提示词
+│   ├── harness_react.j2                # Harness 纯 ReAct 模式系统提示词
+│   └── harness_task_init.j2            # 任务初始化系统消息
+├── user/                  # 用户消息模板（含运行时动态数据）
+│   ├── planner_initial_user.j2         # 初始规划用户消息
+│   ├── planner_revise_user.j2         # 动态修正用户消息
+│   ├── harness_subtask_inject.j2      # 子任务上下文注入用户消息
+│   └── harness_reflect_on_failure.j2  # 失败自省用户消息
+└── fewshot/               # few-shot 示例
+    └── query_plan_example.j2           # 查询计划 JSON 示例
+```
+
+#### 2. 加载器实现（`loader.py`）
+
+- 使用 Jinja2 `Environment` + `FileSystemLoader` 加载模板根目录
+- `autoescape` 关闭（提示词无需 HTML 转义）
+- `trim_blocks=True` + `lstrip_blocks=True`：去除 `{% %}` 控制行产生的多余空行
+- 三个对外 API：`render_system(name, **kwargs)` / `render_user(name, **kwargs)` / `render_fewshot(name, **kwargs)`
+- 模板对象 `@lru_cache` 缓存，避免重复磁盘 I/O
+
+#### 3. 各模块适配
+
+| 模块 | 改造内容 |
+|------|----------|
+| [rag_chain.py](file:///d:/07-MM/KBQA/code/src/rag/rag_chain.py) | `DEFAULT_PROMPT_TEMPLATE` 改为模块加载时从 `system/rag_qa.j2` 渲染；保留 `prompt_template` 参数向后兼容 |
+| [data_analyzer.py](file:///d:/07-MM/KBQA/code/src/analysis/data_analyzer.py) | `_build_query_plan_prompt` 由 system 模板 + fewshot 示例 + 运行时变量拼接；`_build_chart_prompt` 由 system 模板 + 运行时变量拼接；删除原内嵌的 plan_example JSON 字典 |
+| [planner.py](file:///d:/07-MM/KBQA/code/src/agent/planner.py) | 删除 `PLANNER_SYSTEM_PROMPT` / `REVISE_SYSTEM_PROMPT` 常量；`create_initial_plan` / `revise_plan` 改用 `render_system` + `render_user` |
+| [harness.py](file:///d:/07-MM/KBQA/code/src/agent/harness.py) | `DECISION_SYSTEM_PROMPT` / `REACT_SYSTEM_PROMPT` 改为模板名字符串（`"harness_decision"` / `"harness_react"`）；`llm_infer` 接收模板名并调用 `render_system`；`start_task` 初始化系统消息改用 `render_system("harness_task_init")`；子任务上下文注入与失败自省改用 `render_user` |
+
+### 关键决策点
+
+1. **为什么用 Jinja2 而非 LangChain PromptTemplate？**
+   - LangChain PromptTemplate 使用 `str.format` 语法（`{var}`），输出字面量花括号需 `{{}}` 转义，提示词中大量 JSON 示例时极易出错
+   - Jinja2 中 `{` `}` 是字面量，`{{ var }}` 才是变量，JSON 示例无需转义，可读性更好
+   - Jinja2 支持条件块 `{% if %}`（如 `harness_subtask_inject.j2` 仅在 `required_tools` 非空时输出建议工具），表达力更强
+
+2. **为什么按 system / user / fewshot 三分类？**
+   - `system/`：角色定义、规则约束、输出格式规范（对应 Chat 模型 system role）
+   - `user/`：携带运行时数据的用户消息模板（对应 user role，可含动态数据）
+   - `fewshot/`：示例输入输出（如查询计划 JSON 示例），便于单独迭代示例而不动系统提示词
+
+3. **为什么 `harness.py` 保留 `DECISION_SYSTEM_PROMPT` / `REACT_SYSTEM_PROMPT` 常量？**
+   - 改为存储模板名（字符串）而非删除，保持 `llm_infer` 调用签名不变（仍接收字符串参数）
+   - 调用点（`run_loop` / `_run_react_loop`）无需修改，最小化改动面
+
+4. **为什么 `DEFAULT_PROMPT_TEMPLATE` 在模块加载时渲染？**
+   - 保持 `RAGChain.__init__` 的 `prompt_template` 默认参数语义不变（向后兼容）
+   - 模块加载时渲染一次（无变量，等价于读取文件内容），运行时零开销
+
+### 验证结果
+
+使用 kbqa conda 环境运行验证脚本，16 项检查全部通过：
+- 8 个 system 模板渲染正确（含字面量 JSON 花括号、变量替换、fewshot 嵌入）
+- 4 个 user 模板渲染正确（含条件块 `harness_subtask_inject.j2` 在无 `required_tools` 时正确跳过）
+- 1 个 fewshot 模板渲染正确（查询计划 JSON 示例）
+- 3 个模块导入验证：`RAGChain.DEFAULT_PROMPT_TEMPLATE` 从模板加载、`planner` 无遗留常量、`harness` 常量已改为模板名
+
+### 后续待办事项
+
+- [ ] 如需支持多语言提示词，可扩展为 `system/zh/` `system/en/` 子目录
+- [ ] 提示词版本管理：长任务场景下可考虑按版本号加载不同提示词
+- [ ] 单元测试：补充针对各模板的边界场景测试（空值、特殊字符、JSON 注入）

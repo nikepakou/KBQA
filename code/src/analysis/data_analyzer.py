@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 from database.db_manager import DBManager
 from config import MAX_QUERY_ROWS
 from llm_factory import LLMFactory
+from prompt.loader import render_system, render_fewshot
 
 logger = logging.getLogger(__name__)
 
@@ -116,6 +117,11 @@ class DataAnalyzer:
         要求 LLM 根据数据库表结构和用户问题，输出结构化的 JSON 查询计划，
         而不是直接生成 SQL 语句。代码侧负责校验和安全拼接。
 
+        提示词由三部分组成（Jinja2 模板分离）：
+        - system/data_analyzer_query_plan.j2：角色定义 + 规则 + 输出格式
+        - fewshot/query_plan_example.j2：查询计划 JSON 示例
+        - 运行时变量：schema_text、question
+
         Args:
             question: 用户的自然语言问题
 
@@ -123,48 +129,15 @@ class DataAnalyzer:
             完整的提示词字符串
         """
         schema_text = self._get_schema_text()
+        # few-shot 示例从模板加载（src/prompt/fewshot/query_plan_example.j2）
+        plan_example = render_fewshot("query_plan_example")
 
-        # 查询计划的 JSON 结构示例（嵌入 prompt）
-        plan_example = json.dumps(
-            {
-                "table": "orders",
-                "fields": [
-                    {"name": "order_id", "alias": "订单ID"},
-                    {"name": "total_amount", "alias": "总金额", "function": "SUM"},
-                    {"name": "created_at", "alias": "创建时间"},
-                ],
-                "filters": [
-                    {"field": "status", "operator": "=", "value": "paid"},
-                    {"field": "created_at", "operator": ">=", "value": "2024-01-01"},
-                ],
-                "group_by": ["order_id"],
-                "order_by": [{"field": "total_amount", "direction": "DESC"}],
-                "limit": 10,
-            },
-            ensure_ascii=False,
-            indent=2,
+        return render_system(
+            "data_analyzer_query_plan",
+            schema_text=schema_text,
+            question=question,
+            plan_example=plan_example,
         )
-
-        prompt = f"""你是一个数据库专家。请根据当前数据库表结构，将用户的自然语言问题转换为【结构化查询计划】（JSON 格式）。你不需要直接写 SQL，只需描述查询意图。
-
-规则：
-1. 严格输出 JSON 对象，不要加任何解释说明或 markdown 标记
-2. 只能从数据库表结构中选择表名和字段名，禁止编造不存在的表或字段
-3. 聚合函数只允许: COUNT, SUM, AVG, MIN, MAX
-4. 操作符只允许: =, !=, >, <, >=, <=, LIKE, IN, BETWEEN, NOT IN, NOT LIKE
-5. 如果问题不明确，返回最合理的查询计划
-6. WHERE 值直接填原始值（字符串、数字、日期等），代码会自动处理类型
-
-数据库表结构：
-{schema_text}
-
-用户问题：{question}
-
-请按如下 JSON 格式返回查询计划（示例仅供参考，实际内容需根据问题生成）：
-{plan_example}
-
-查询计划 JSON："""
-        return prompt
 
     def generate_query_plan(self, question: str) -> QueryPlan:
         """根据自然语言问题生成结构化查询计划。
@@ -385,6 +358,9 @@ class DataAnalyzer:
     def _build_chart_prompt(self, question: str, sql: str, columns: list, rows: list) -> str:
         """构建图表推荐的提示词。
 
+        提示词模板位于 src/prompt/system/data_analyzer_chart.j2，
+        运行时注入：question、sql、columns_json、sample_rows_json。
+
         Args:
             question: 用户的自然语言问题
             sql: 实际执行的 SQL 语句
@@ -399,25 +375,13 @@ class DataAnalyzer:
         # default=str 兼容 datetime、Decimal 等不可序列化类型
         sample_rows_json = json.dumps(sample_rows, ensure_ascii=False, default=str)
 
-        prompt = f"""你是一个数据可视化专家。请根据以下信息推荐最合适的 ECharts 图表并生成完整配置。
-
-规则：
-1. 根据数据特征选择图表类型：
-   - 类别 + 数值 → 柱状图 (bar)
-   - 时间 + 数值 → 折线图 (line)
-   - 占比/比例 → 饼图 (pie)
-   - 不适合可视化 → chart_type 设为 "none"
-2. 返回严格的 JSON 格式，不要加 markdown 标记
-3. option 必须是完整的 ECharts 配置
-
-用户问题：{question}
-执行的 SQL：{sql}
-查询结果列名：{columns_json}
-查询结果数据（前5行）：{sample_rows_json}
-
-请返回如下 JSON 格式：
-{{"chart_type": "bar", "option": {{"title": {{"text": "..."}}, ...}}}}"""
-        return prompt
+        return render_system(
+            "data_analyzer_chart",
+            question=question,
+            sql=sql,
+            columns_json=columns_json,
+            sample_rows_json=sample_rows_json,
+        )
 
     def recommend_chart(self, question: str, sql: str, query_result: dict) -> dict:
         """根据查询结果推荐 ECharts 图表配置。

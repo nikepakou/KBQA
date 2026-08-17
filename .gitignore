@@ -29,6 +29,7 @@ code/src/__pycache__/*
 code/src/analysis/__pycache__/*
 code/src/database/__pycache__/*
 code/src/rag/__pycache__/*
+code/src/prompt/__pycache__/*
 
 # ==================== IDE ====================
 .idea/

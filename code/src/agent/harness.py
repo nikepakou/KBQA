@@ -16,6 +16,13 @@ Agent Harness 核心运行引擎
 3. 规划驱动（DAG 依赖调度）+ 无 Plan 任务回退纯 ReAct（向后兼容）
 4. 动态规划：子任务失败时触发 revise_plan（防过度规划：仅失败时 + 次数上限）
 5. 工具调用幂等三层防护（预占位 / 重复预检查 / check_executed 恢复）完整保留
+
+提示词模板（Jinja2 分离，位于 src/prompt/）：
+- system/harness_decision.j2：规划模式决策系统提示词
+- system/harness_react.j2：纯 ReAct 模式决策系统提示词
+- system/harness_task_init.j2：任务初始化系统消息
+- user/harness_subtask_inject.j2：子任务上下文注入用户消息
+- user/harness_reflect_on_failure.j2：失败自省用户消息
 """
 
 import json
@@ -30,32 +37,13 @@ from agent.tools import BaseTool
 from llm_factory import LLMFactory
 from agent_trace import (TraceCollector, get_collector,
                          set_current_trace)
+from prompt.loader import render_system, render_user
 
 logger = logging.getLogger(__name__)
 
-# 主循环决策提示词：单条子任务内的工具选择
-DECISION_SYSTEM_PROMPT = """你是一个知识库问答与数据分析 Agent。请根据对话上下文（含历史工具调用结果）完成当前子任务。
-
-可用工具：
-{tools_desc}
-
-决策规则：
-1. 如果当前子任务已有足够信息完成，返回：{{"type": "finish", "content": "子任务完成总结"}}
-2. 如果需要检索文档或查询数据，返回：{{"type": "tool_call", "tool_name": "工具名", "args": {{...}}}}
-3. 只返回一个 JSON 对象，不要输出任何其他文字或 markdown 标记
-4. 不要重复调用参数完全相同的工具（系统会拦截并提示）"""
-
-# 纯 ReAct 模式（无计划）决策提示词
-REACT_SYSTEM_PROMPT = """你是一个知识库问答与数据分析 Agent。请根据对话上下文（含历史工具调用结果）做出下一步决策。
-
-可用工具：
-{tools_desc}
-
-决策规则：
-1. 如果已有足够信息回答用户问题，返回：{{"type": "finish", "content": "最终回答内容"}}
-2. 如果需要检索文档或查询数据，返回：{{"type": "tool_call", "tool_name": "工具名", "args": {{...}}}}
-3. 只返回一个 JSON 对象，不要输出任何其他文字或 markdown 标记
-4. 不要重复调用参数完全相同的工具（系统会拦截并提示）"""
+# 决策系统提示词模板名（位于 src/prompt/system/）
+DECISION_SYSTEM_PROMPT = "harness_decision"
+REACT_SYSTEM_PROMPT = "harness_react"
 
 
 class AgentHarness:
@@ -114,6 +102,11 @@ class AgentHarness:
     def llm_infer(self, state: AgentState, system_prompt: str) -> Dict[str, Any]:
         """调用 LLM 进行单次决策。
 
+        Args:
+            state: 当前 Agent 状态
+            system_prompt: 系统提示词模板名（位于 src/prompt/system/<name>.j2），
+                           例如 "harness_decision" 或 "harness_react"
+
         返回格式：
         {"type": "tool_call", "tool_name": "xxx", "args": {...}}
         或 {"type": "finish", "content": "任务完成结论"}
@@ -122,7 +115,7 @@ class AgentHarness:
             f"- {t.name} ({t.risk_level}): {t.description}"
             for t in self.tool_map.values()
         )
-        prompt = system_prompt.format(tools_desc=tools_desc)
+        prompt = render_system(system_prompt, tools_desc=tools_desc)
 
         # 组装消息：tool 角色消息转为 user 文本（兼容所有 Chat 模型）
         llm_messages: List[Dict[str, str]] = [
@@ -203,7 +196,7 @@ class AgentHarness:
             iteration=0,
             max_iteration=max_iter,
             messages=[
-                {"role": "system", "content": "你是知识库问答与数据分析Agent，根据任务计划逐步完成目标"},
+                {"role": "system", "content": render_system("harness_task_init")},
                 {"role": "user", "content": user_query},
             ],
             current_subtask_id=None,
@@ -391,13 +384,14 @@ class AgentHarness:
                        depend_on=next_subtask.depend_on,
                        plan_version=plan.plan_version)
 
-            # 给 LLM 注入当前子任务上下文，引导决策
-            inject = (
-                f"[任务计划] 总目标：{plan.overall_goal}\n"
-                f"当前需要完成子任务：{next_subtask.title}，{next_subtask.description}"
+            # 给 LLM 注入当前子任务上下文，引导决策（模板：user/harness_subtask_inject.j2）
+            inject = render_user(
+                "harness_subtask_inject",
+                overall_goal=plan.overall_goal,
+                subtask_title=next_subtask.title,
+                subtask_description=next_subtask.description,
+                required_tools=", ".join(next_subtask.required_tools) if next_subtask.required_tools else "",
             )
-            if next_subtask.required_tools:
-                inject += f"\n建议使用工具：{', '.join(next_subtask.required_tools)}"
             state.messages.append({"role": "user", "content": inject})
             self.state_store.save(state)
 
@@ -626,16 +620,20 @@ class AgentHarness:
 
     def _reflect_on_failure(self, state: AgentState, tool_name: str,
                             tool_args: Dict[str, Any], error: str) -> None:
-        """失败自省（可选增强分支）：让 LLM 分析失败原因并给出调整建议"""
+        """失败自省（可选增强分支）：让 LLM 分析失败原因并给出调整建议
+
+        提示词模板位于 src/prompt/user/harness_reflect_on_failure.j2
+        """
         history_brief = [
             {"tool": r["tool_name"], "success": r["success"]}
             for r in state.tool_records[-5:]
         ]
-        prompt = (
-            f"历史执行记录：{json.dumps(history_brief, ensure_ascii=False)}\n"
-            f"当前工具 {tool_name} 调用失败：{error}\n"
-            f"调用参数：{json.dumps(tool_args, ensure_ascii=False)}\n"
-            "请用一两句话分析失败原因，并给出下一步调整建议。"
+        prompt = render_user(
+            "harness_reflect_on_failure",
+            history_json=json.dumps(history_brief, ensure_ascii=False),
+            tool_name=tool_name,
+            error=error,
+            args_json=json.dumps(tool_args, ensure_ascii=False),
         )
         response = self.llm.invoke(prompt)
         suggestion = getattr(response, "content", str(response))

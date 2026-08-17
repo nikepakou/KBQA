@@ -12,19 +12,12 @@ from langchain_core.runnables import RunnablePassthrough
 from langchain_core.documents import Document
 
 from llm_factory import LLMFactory
+from prompt.loader import render_system
 
 logger = logging.getLogger(__name__)
 
-# 默认提示词模板
-DEFAULT_PROMPT_TEMPLATE = """你是一个知识库问答助手。请基于以下上下文回答用户的问题。
-如果上下文中没有相关信息，请明确告知用户无法从知识库中找到答案。
-
-上下文：
-{context}
-
-问题：{question}
-
-请用中文回答："""
+# 默认提示词模板（从 src/prompt/system/rag_qa.j2 加载）
+DEFAULT_PROMPT_TEMPLATE = render_system("rag_qa")
 
 
 class RAGChain:
