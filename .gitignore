@@ -1,5 +1,3 @@
-code/src/__pycache__
-
 # ==================== Python ====================
 __pycache__/
 *.py[cod]
@@ -27,6 +25,7 @@ wheels/
 .env.local
 code/.env
 code/.env.local
+code/src/__pycache__/
 
 # ==================== IDE ====================
 .idea/
